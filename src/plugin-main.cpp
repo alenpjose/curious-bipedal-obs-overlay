@@ -33,8 +33,14 @@ struct OverlayLifetime {
 
 struct Overlay {
 	obs_source_t *source = nullptr;
+	obs_source_t *session_panel_left = nullptr;
 	obs_source_t *session_panel = nullptr;
+	obs_source_t *session_panel_right = nullptr;
+	obs_source_t *session_panel_left_opacity_filter = nullptr;
+	obs_source_t *session_panel_opacity_filter = nullptr;
+	obs_source_t *session_panel_right_opacity_filter = nullptr;
 	obs_source_t *telemetry_panel = nullptr;
+	obs_source_t *telemetry_panel_opacity_filter = nullptr;
 	obs_source_t *accent = nullptr;
 	obs_source_t *logo = nullptr;
 	obs_source_t *logo_opacity_filter = nullptr;
@@ -66,7 +72,7 @@ struct Overlay {
 	bool show_timer = true;
 	bool show_logo = true;
 	int opacity = 82;
-	int scale_percent = 100;
+	int scale_percent = 80;
 	int edge_margin = 0;
 	uint32_t accent_color = 0xFF3D9BEF;
 
@@ -156,7 +162,8 @@ void update_color_source(obs_source_t *source, uint32_t color, int width, int he
 }
 
 void update_text_source(obs_source_t *source, const std::string &text, int font_size, bool bold, int opacity,
-			uint32_t color, int extents_width, int extents_height, const char *align = "left")
+			uint32_t color, int extents_width, int extents_height, const char *align = "left",
+			bool use_extents = true)
 {
 	if (!source)
 		return;
@@ -174,10 +181,12 @@ void update_text_source(obs_source_t *source, const std::string &text, int font_
 	obs_data_set_bool(settings, "outline", false);
 	obs_data_set_string(settings, "align", align);
 	obs_data_set_string(settings, "valign", "center");
-	obs_data_set_bool(settings, "extents", true);
+	obs_data_set_bool(settings, "extents", use_extents);
 	obs_data_set_bool(settings, "extents_wrap", false);
-	obs_data_set_int(settings, "extents_cx", extents_width);
-	obs_data_set_int(settings, "extents_cy", extents_height);
+	if (use_extents) {
+		obs_data_set_int(settings, "extents_cx", extents_width);
+		obs_data_set_int(settings, "extents_cy", extents_height);
+	}
 	obs_source_update(source, settings);
 	obs_data_release(font);
 	obs_data_release(settings);
@@ -191,6 +200,35 @@ obs_source_t *make_private_source(const char *id, const char *name)
 	if (!source)
 		blog(LOG_WARNING, "[Curious Bipedal] Required OBS source '%s' is unavailable", id);
 	return source;
+}
+
+obs_source_t *make_private_image_source(const char *name, const char *relative_path)
+{
+	char *path = obs_module_file(relative_path);
+	if (!path)
+		return nullptr;
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_string(settings, "file", path);
+	obs_data_set_bool(settings, "unload", false);
+	obs_source_t *source = obs_source_create_private("image_source", name, settings);
+	obs_data_release(settings);
+	bfree(path);
+	if (!source)
+		blog(LOG_WARNING, "[Curious Bipedal] Image asset '%s' is unavailable", relative_path);
+	return source;
+}
+
+obs_source_t *attach_opacity_filter(obs_source_t *source, const char *name)
+{
+	if (!source)
+		return nullptr;
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_double(settings, "opacity", 0.82);
+	obs_source_t *filter = obs_source_create_private("color_filter_v2", name, settings);
+	obs_data_release(settings);
+	if (filter)
+		obs_source_filter_add(source, filter);
+	return filter;
 }
 
 void add_active_child(Overlay *overlay, obs_source_t *child)
@@ -348,22 +386,32 @@ bool request_vertical_output_connection(Overlay *overlay)
 void refresh_static_children(Overlay *overlay)
 {
 	const uint8_t alpha = static_cast<uint8_t>((overlay->opacity * 255) / 100);
-	update_color_source(overlay->session_panel, rgba(14, 22, 31, alpha), 820, 170);
-	update_color_source(overlay->telemetry_panel, rgba(14, 22, 31, alpha), 460, 148);
 	update_color_source(overlay->accent, (overlay->accent_color & 0x00FFFFFFU) | (static_cast<uint32_t>(alpha) << 24U),
-			    8, 170);
+			    8, 92);
 
 	const std::string log_line = "LOG " + overlay->log_number;
 	update_text_source(overlay->label_text, "CURIOUS BIPEDAL  /  FIELD SESSION", 17, true, overlay->opacity,
-			   rgba(239, 155, 61, 255), 580, 30);
+			   rgba(239, 155, 61, 255), 0, 0, "left", false);
 	update_text_source(overlay->title_text, overlay->session_title, 38, true, overlay->opacity,
-			   rgba(244, 241, 233, 255), 580, 58);
-	update_text_source(overlay->log_text, log_line, 18, false, overlay->opacity, rgba(174, 183, 191, 255), 580, 34);
+			   rgba(244, 241, 233, 255), 0, 0, "left", false);
+	update_text_source(overlay->log_text, log_line, 18, false, overlay->opacity,
+			   rgba(174, 183, 191, 255), 0, 0, "left", false);
 
 	if (overlay->logo_opacity_filter) {
 		obs_data_t *filter_settings = obs_data_create();
 		obs_data_set_double(filter_settings, "opacity", static_cast<double>(overlay->opacity) / 100.0);
 		obs_source_update(overlay->logo_opacity_filter, filter_settings);
+		obs_data_release(filter_settings);
+	}
+	for (obs_source_t *filter : {overlay->session_panel_left_opacity_filter,
+				     overlay->session_panel_opacity_filter,
+				     overlay->session_panel_right_opacity_filter,
+				     overlay->telemetry_panel_opacity_filter}) {
+		if (!filter)
+			continue;
+		obs_data_t *filter_settings = obs_data_create();
+		obs_data_set_double(filter_settings, "opacity", static_cast<double>(overlay->opacity) / 100.0);
+		obs_source_update(filter, filter_settings);
 		obs_data_release(filter_settings);
 	}
 }
@@ -397,528 +445,8 @@ void update_clock_children(Overlay *overlay, uint64_t now)
 		      static_cast<unsigned long long>(hours), static_cast<unsigned long long>(minutes),
 		      static_cast<unsigned long long>(seconds));
 
-	update_text_source(overlay->time_text, overlay->show_time ? time_string : "", 42, true, overlay->opacity,
-			   rgba(244, 241, 233, 255), 250, 58, "right");
-	update_text_source(overlay->date_text, overlay->show_date ? date_string : "", 17, false, overlay->opacity,
-			   rgba(174, 183, 191, 255), 250, 30, "right");
-	update_text_source(overlay->timer_text, overlay->show_timer ? std::string("ELAPSED  ") + timer_buffer : "", 18,
-			   true, overlay->opacity, rgba(239, 155, 61, 255), 380, 36, "right");
-}
-
-void overlay_update(void *data, obs_data_t *settings)
-{
-	auto *overlay = static_cast<Overlay *>(data);
-	TimerBinding previous_binding;
-	std::string previous_output;
-	uint32_t previous_width;
-	uint32_t previous_height;
-	TimerBinding current_binding;
-	std::string current_output;
-	uint32_t current_width;
-	uint32_t current_height;
-
-	{
-		std::lock_guard<std::mutex> lock(overlay->mutex);
-		previous_binding = overlay->binding;
-		previous_output = overlay->aitum_output_name;
-		previous_width = overlay->width;
-		previous_height = overlay->height;
-		overlay->layout = obs_data_get_int(settings, "layout") == static_cast<int>(Layout::Vertical)
-				  ? Layout::Vertical
-				  : Layout::Landscape;
-		overlay->width =
-			static_cast<uint32_t>(std::clamp<int64_t>(obs_data_get_int(settings, "canvas_width"), 320, 7680));
-		overlay->height =
-			static_cast<uint32_t>(std::clamp<int64_t>(obs_data_get_int(settings, "canvas_height"), 320, 7680));
-		overlay->session_title = obs_data_get_string(settings, "session_title");
-		overlay->log_number = obs_data_get_string(settings, "log_number");
-		overlay->use_system_clock = obs_data_get_bool(settings, "use_system_clock");
-		overlay->manual_date = obs_data_get_string(settings, "manual_date");
-		overlay->manual_time = obs_data_get_string(settings, "manual_time");
-		overlay->show_date = obs_data_get_bool(settings, "show_date");
-		overlay->show_time = obs_data_get_bool(settings, "show_time");
-		overlay->show_timer = obs_data_get_bool(settings, "show_timer");
-		overlay->show_logo = obs_data_get_bool(settings, "show_logo");
-		overlay->opacity = static_cast<int>(std::clamp<int64_t>(obs_data_get_int(settings, "opacity"), 10, 100));
-		overlay->scale_percent =
-			static_cast<int>(std::clamp<int64_t>(obs_data_get_int(settings, "scale_percent"), 50, 180));
-		overlay->edge_margin =
-			static_cast<int>(std::clamp<int64_t>(obs_data_get_int(settings, "edge_margin"), 0, 200));
-		overlay->accent_color = static_cast<uint32_t>(obs_data_get_int(settings, "accent_color"));
-		const int64_t binding_value = obs_data_get_int(settings, "timer_binding");
-		overlay->binding = binding_value >= static_cast<int>(TimerBinding::MainObs) &&
-					   binding_value <= static_cast<int>(TimerBinding::Manual)
-				   ? static_cast<TimerBinding>(binding_value)
-				   : TimerBinding::MainObs;
-		overlay->aitum_output_name = obs_data_get_string(settings, "aitum_output_name");
-		current_binding = overlay->binding;
-		current_output = overlay->aitum_output_name;
-		current_width = overlay->width;
-		current_height = overlay->height;
-		refresh_static_children(overlay);
-		update_clock_children(overlay, os_gettime_ns());
-	}
-
-	if (previous_binding != current_binding || previous_output != current_output || previous_width != current_width ||
-	    previous_height != current_height) {
-		if (current_binding == TimerBinding::AitumVertical)
-			request_vertical_output_connection(overlay);
-		else
-			disconnect_vertical_output(overlay);
-	}
-	if (current_binding == TimerBinding::MainObs)
-		timer_set_running(overlay, obs_frontend_streaming_active());
-}
-
-void overlay_defaults(obs_data_t *settings)
-{
-	obs_data_set_default_int(settings, "layout", static_cast<int>(Layout::Landscape));
-	obs_data_set_default_int(settings, "canvas_width", 2560);
-	obs_data_set_default_int(settings, "canvas_height", 1440);
-	obs_data_set_default_string(settings, "session_title", "Gameplay Session");
-	obs_data_set_default_string(settings, "log_number", "001");
-	obs_data_set_default_bool(settings, "use_system_clock", true);
-	obs_data_set_default_string(settings, "manual_date", "2026-08-04");
-	obs_data_set_default_string(settings, "manual_time", "20:00");
-	obs_data_set_default_bool(settings, "show_date", true);
-	obs_data_set_default_bool(settings, "show_time", true);
-	obs_data_set_default_bool(settings, "show_timer", true);
-	obs_data_set_default_bool(settings, "show_logo", true);
-	obs_data_set_default_int(settings, "opacity", 82);
-	obs_data_set_default_int(settings, "scale_percent", 100);
-	obs_data_set_default_int(settings, "edge_margin", 0);
-	obs_data_set_default_int(settings, "accent_color", rgba(239, 155, 61, 255));
-	obs_data_set_default_int(settings, "timer_binding", static_cast<int>(TimerBinding::MainObs));
-	obs_data_set_default_string(settings, "aitum_output_name", "YouTube");
-}
-
-bool layout_modified(obs_properties_t *properties, obs_property_t *, obs_data_t *settings)
-{
-	const auto layout = static_cast<Layout>(obs_data_get_int(settings, "layout"));
-	if (layout == Layout::Vertical) {
-		obs_data_set_int(settings, "canvas_width", 1440);
-		obs_data_set_int(settings, "canvas_height", 2560);
-		obs_data_set_int(settings, "timer_binding", static_cast<int>(TimerBinding::AitumVertical));
-	} else {
-		obs_data_set_int(settings, "canvas_width", 2560);
-		obs_data_set_int(settings, "canvas_height", 1440);
-		obs_data_set_int(settings, "timer_binding", static_cast<int>(TimerBinding::MainObs));
-	}
-	const bool show_aitum = layout == Layout::Vertical;
-	if (obs_property_t *property = obs_properties_get(properties, "aitum_output_name"))
-		obs_property_set_visible(property, show_aitum);
-	if (obs_property_t *property = obs_properties_get(properties, "reconnect_aitum"))
-		obs_property_set_visible(property, show_aitum);
-	return true;
-}
-
-bool timer_binding_modified(obs_properties_t *properties, obs_property_t *, obs_data_t *settings)
-{
-	const auto binding = static_cast<TimerBinding>(obs_data_get_int(settings, "timer_binding"));
-	if (obs_property_t *property = obs_properties_get(properties, "aitum_output_name"))
-		obs_property_set_visible(property, binding == TimerBinding::AitumVertical);
-	if (obs_property_t *property = obs_properties_get(properties, "reconnect_aitum"))
-		obs_property_set_visible(property, binding == TimerBinding::AitumVertical);
-	return true;
-}
-
-bool system_clock_modified(obs_properties_t *properties, obs_property_t *, obs_data_t *settings)
-{
-	const bool automatic = obs_data_get_bool(settings, "use_system_clock");
-	if (obs_property_t *property = obs_properties_get(properties, "manual_date"))
-		obs_property_set_enabled(property, !automatic);
-	if (obs_property_t *property = obs_properties_get(properties, "manual_time"))
-		obs_property_set_enabled(property, !automatic);
-	return true;
-}
-
-bool button_start_pause(obs_properties_t *, obs_property_t *, void *data)
-{
-	if (data)
-		timer_toggle(static_cast<Overlay *>(data));
-	return true;
-}
-
-bool button_reset(obs_properties_t *, obs_property_t *, void *data)
-{
-	if (data)
-		timer_reset(static_cast<Overlay *>(data));
-	return true;
-}
-
-bool button_reconnect(obs_properties_t *, obs_property_t *, void *data)
-{
-	return data ? request_vertical_output_connection(static_cast<Overlay *>(data)) : false;
-}
-
-obs_properties_t *overlay_properties(void *data)
-{
-	obs_properties_t *properties = obs_properties_create();
-	obs_properties_add_text(properties, "setup_note", obs_module_text("SetupNote"), OBS_TEXT_INFO);
-
-	obs_properties_t *identity = obs_properties_create();
-	obs_properties_add_text(identity, "session_title", obs_module_text("SessionTitle"), OBS_TEXT_DEFAULT);
-	obs_properties_add_text(identity, "log_number", obs_module_text("LogNumber"), OBS_TEXT_DEFAULT);
-	obs_properties_add_group(properties, "identity_group", obs_module_text("IdentityGroup"), OBS_GROUP_NORMAL, identity);
-
-	obs_properties_t *layout_group = obs_properties_create();
-	obs_property_t *layout = obs_properties_add_list(layout_group, "layout", obs_module_text("Layout"),
-						       OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
-	obs_property_list_add_int(layout, obs_module_text("Landscape"), static_cast<int>(Layout::Landscape));
-	obs_property_list_add_int(layout, obs_module_text("Vertical"), static_cast<int>(Layout::Vertical));
-	obs_property_set_modified_callback(layout, layout_modified);
-	obs_properties_add_int(layout_group, "canvas_width", obs_module_text("CanvasWidth"), 320, 7680, 2);
-	obs_properties_add_int(layout_group, "canvas_height", obs_module_text("CanvasHeight"), 320, 7680, 2);
-	obs_properties_add_int_slider(layout_group, "scale_percent", obs_module_text("OverlayScale"), 50, 180, 1);
-	obs_properties_add_int_slider(layout_group, "edge_margin", obs_module_text("EdgeMargin"), 0, 200, 1);
-	obs_properties_add_group(properties, "layout_group", obs_module_text("LayoutGroup"), OBS_GROUP_NORMAL,
-				 layout_group);
-
-	obs_properties_t *display = obs_properties_create();
-	obs_properties_add_bool(display, "show_logo", obs_module_text("ShowLogo"));
-	obs_properties_add_bool(display, "show_time", obs_module_text("ShowTime"));
-	obs_properties_add_bool(display, "show_date", obs_module_text("ShowDate"));
-	obs_properties_add_bool(display, "show_timer", obs_module_text("ShowTimer"));
-	obs_properties_add_int_slider(display, "opacity", obs_module_text("Opacity"), 10, 100, 1);
-	obs_properties_add_color(display, "accent_color", obs_module_text("AccentColor"));
-	obs_properties_add_group(properties, "display_group", obs_module_text("DisplayGroup"), OBS_GROUP_NORMAL, display);
-
-	obs_properties_t *clock = obs_properties_create();
-	obs_property_t *system_clock = obs_properties_add_bool(clock, "use_system_clock", obs_module_text("UseSystemClock"));
-	obs_property_set_modified_callback(system_clock, system_clock_modified);
-	obs_properties_add_text(clock, "manual_date", obs_module_text("ManualDate"), OBS_TEXT_DEFAULT);
-	obs_properties_add_text(clock, "manual_time", obs_module_text("ManualTime"), OBS_TEXT_DEFAULT);
-	obs_property_t *binding = obs_properties_add_list(clock, "timer_binding", obs_module_text("TimerBinding"),
-							OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
-	obs_property_list_add_int(binding, obs_module_text("MainObsBinding"), static_cast<int>(TimerBinding::MainObs));
-	obs_property_list_add_int(binding, obs_module_text("AitumBinding"), static_cast<int>(TimerBinding::AitumVertical));
-	obs_property_list_add_int(binding, obs_module_text("ManualBinding"), static_cast<int>(TimerBinding::Manual));
-	obs_property_set_modified_callback(binding, timer_binding_modified);
-	obs_properties_add_text(clock, "aitum_output_name", obs_module_text("AitumOutputName"), OBS_TEXT_DEFAULT);
-	obs_properties_add_button(clock, "reconnect_aitum", obs_module_text("ReconnectAitum"), button_reconnect);
-	obs_properties_add_button(clock, "start_pause", obs_module_text("StartPause"), button_start_pause);
-	obs_properties_add_button(clock, "reset", obs_module_text("ResetTimer"), button_reset);
-	obs_properties_add_group(properties, "clock_group", obs_module_text("ClockGroup"), OBS_GROUP_NORMAL, clock);
-	if (data) {
-		auto *overlay = static_cast<Overlay *>(data);
-		std::lock_guard<std::mutex> lock(overlay->mutex);
-		const bool show_aitum = overlay->binding == TimerBinding::AitumVertical;
-		obs_property_set_visible(obs_properties_get(properties, "aitum_output_name"), show_aitum);
-		obs_property_set_visible(obs_properties_get(properties, "reconnect_aitum"), show_aitum);
-		obs_property_set_enabled(obs_properties_get(properties, "manual_date"), !overlay->use_system_clock);
-		obs_property_set_enabled(obs_properties_get(properties, "manual_time"), !overlay->use_system_clock);
-	}
-	return properties;
-}
-
-void hotkey_start_pause(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed)
-{
-	if (pressed)
-		timer_toggle(static_cast<Overlay *>(data));
-}
-
-void hotkey_reset(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed)
-{
-	if (pressed)
-		timer_reset(static_cast<Overlay *>(data));
-}
-
-void *overlay_create(obs_data_t *settings, obs_source_t *source)
-{
-	auto *overlay = new Overlay;
-	overlay->source = source;
-	overlay->lifetime->overlay = overlay;
-	overlay->session_panel = make_private_source("color_source_v3", "Curious Bipedal session panel");
-	overlay->telemetry_panel = make_private_source("color_source_v3", "Curious Bipedal telemetry panel");
-	overlay->accent = make_private_source("color_source_v3", "Curious Bipedal accent");
-	overlay->label_text = make_private_source("text_gdiplus_v3", "Curious Bipedal label");
-	overlay->title_text = make_private_source("text_gdiplus_v3", "Curious Bipedal title");
-	overlay->log_text = make_private_source("text_gdiplus_v3", "Curious Bipedal log");
-	overlay->time_text = make_private_source("text_gdiplus_v3", "Curious Bipedal time");
-	overlay->date_text = make_private_source("text_gdiplus_v3", "Curious Bipedal date");
-	overlay->timer_text = make_private_source("text_gdiplus_v3", "Curious Bipedal timer");
-
-	char *logo_path = obs_module_file("assets/curious-bipedal-primary-glyph-safe.png");
-	if (logo_path) {
-		obs_data_t *logo_settings = obs_data_create();
-		obs_data_set_string(logo_settings, "file", logo_path);
-		obs_data_set_bool(logo_settings, "unload", false);
-		overlay->logo = obs_source_create_private("image_source", "Curious Bipedal approved logo", logo_settings);
-		obs_data_release(logo_settings);
-		bfree(logo_path);
-	}
-	if (overlay->logo) {
-		obs_data_t *filter_settings = obs_data_create();
-		obs_data_set_double(filter_settings, "opacity", 0.82);
-		overlay->logo_opacity_filter =
-			obs_source_create_private("color_filter_v2", "Curious Bipedal shared opacity", filter_settings);
-		obs_data_release(filter_settings);
-		if (overlay->logo_opacity_filter)
-			obs_source_filter_add(overlay->logo, overlay->logo_opacity_filter);
-	}
-	add_active_child(overlay, overlay->session_panel);
-	add_active_child(overlay, overlay->telemetry_panel);
-	add_active_child(overlay, overlay->accent);
-	add_active_child(overlay, overlay->logo);
-	add_active_child(overlay, overlay->label_text);
-	add_active_child(overlay, overlay->title_text);
-	add_active_child(overlay, overlay->log_text);
-	add_active_child(overlay, overlay->time_text);
-	add_active_child(overlay, overlay->date_text);
-	add_active_child(overlay, overlay->timer_text);
-
-	overlay->start_pause_hotkey = obs_hotkey_register_source(source, "curious_bipedal.timer.start_pause",
-								  obs_module_text("HotkeyStartPause"), hotkey_start_pause, overlay);
-	overlay->reset_hotkey = obs_hotkey_register_source(source, "curious_bipedal.timer.reset",
-							obs_module_text("HotkeyReset"), hotkey_reset, overlay);
-	{
-		std::lock_guard<std::mutex> lock(g_instances_mutex);
-		g_instances.push_back(overlay);
-	}
-	overlay_update(overlay, settings);
-	return overlay;
-}
-
-void release_source(obs_source_t *&source)
-{
-	if (source) {
-		obs_source_release(source);
-		source = nullptr;
-	}
-}
-
-void overlay_destroy(void *data)
-{
-	auto *overlay = static_cast<Overlay *>(data);
-	overlay->destroying.store(true, std::memory_order_release);
-	{
-		std::lock_guard<std::mutex> lifetime_lock(overlay->lifetime->mutex);
-		overlay->lifetime->overlay = nullptr;
-	}
-	{
-		std::lock_guard<std::mutex> lock(g_instances_mutex);
-		g_instances.erase(std::remove(g_instances.begin(), g_instances.end(), overlay), g_instances.end());
-	}
-	disconnect_vertical_output(overlay);
-	remove_active_child(overlay, overlay->session_panel);
-	remove_active_child(overlay, overlay->telemetry_panel);
-	remove_active_child(overlay, overlay->accent);
-	remove_active_child(overlay, overlay->logo);
-	remove_active_child(overlay, overlay->label_text);
-	remove_active_child(overlay, overlay->title_text);
-	remove_active_child(overlay, overlay->log_text);
-	remove_active_child(overlay, overlay->time_text);
-	remove_active_child(overlay, overlay->date_text);
-	remove_active_child(overlay, overlay->timer_text);
-	if (overlay->logo && overlay->logo_opacity_filter)
-		obs_source_filter_remove(overlay->logo, overlay->logo_opacity_filter);
-	release_source(overlay->logo_opacity_filter);
-	release_source(overlay->logo);
-	release_source(overlay->session_panel);
-	release_source(overlay->telemetry_panel);
-	release_source(overlay->accent);
-	release_source(overlay->label_text);
-	release_source(overlay->title_text);
-	release_source(overlay->log_text);
-	release_source(overlay->time_text);
-	release_source(overlay->date_text);
-	release_source(overlay->timer_text);
-	delete overlay;
-}
-
-uint32_t overlay_width(void *data)
-{
-	auto *overlay = static_cast<Overlay *>(data);
-	std::lock_guard<std::mutex> lock(overlay->mutex);
-	return overlay->width;
-}
-
-uint32_t overlay_height(void *data)
-{
-	auto *overlay = static_cast<Overlay *>(data);
-	std::lock_guard<std::mutex> lock(overlay->mutex);
-	return overlay->height;
-}
-
-void overlay_enum_active_sources(void *data, obs_source_enum_proc_t enum_callback, void *param)
-{
-	auto *overlay = static_cast<Overlay *>(data);
-	obs_source_t *children[] = {overlay->session_panel, overlay->telemetry_panel, overlay->accent,
-				    overlay->logo,          overlay->label_text,      overlay->title_text,
-				    overlay->log_text,      overlay->time_text,       overlay->date_text,
-				    overlay->timer_text};
-	for (obs_source_t *child : children) {
-		if (child)
-			enum_callback(overlay->source, child, param);
-	}
-}
-
-void overlay_save(void *data, obs_data_t *settings)
-{
-	auto *overlay = static_cast<Overlay *>(data);
-	std::lock_guard<std::mutex> lock(overlay->mutex);
-	obs_data_set_int(settings, "timer_elapsed_ns", static_cast<long long>(elapsed_ns_locked(overlay, os_gettime_ns())));
-	obs_data_set_bool(settings, "timer_was_running", overlay->timer_running);
-}
-
-void overlay_load(void *data, obs_data_t *settings)
-{
-	auto *overlay = static_cast<Overlay *>(data);
-	std::lock_guard<std::mutex> lock(overlay->mutex);
-	if (!obs_data_has_user_value(settings, "timer_elapsed_ns"))
-		return;
-	overlay->elapsed_before_start_ns =
-		static_cast<uint64_t>(std::max<long long>(0, obs_data_get_int(settings, "timer_elapsed_ns")));
-	overlay->timer_started_ns = os_gettime_ns();
-	if (overlay->binding == TimerBinding::Manual)
-		overlay->timer_running = obs_data_get_bool(settings, "timer_was_running");
-}
-
-void overlay_tick(void *data, float)
-{
-	auto *overlay = static_cast<Overlay *>(data);
-	const uint64_t now = os_gettime_ns();
-	{
-		std::lock_guard<std::mutex> lock(overlay->mutex);
-		if (now - overlay->last_clock_update_ns >= NS_PER_SECOND / 4) {
-			update_clock_children(overlay, now);
-			overlay->last_clock_update_ns = now;
-		}
-	}
-	bool retry_aitum = false;
-	{
-		std::lock_guard<std::mutex> state_lock(overlay->mutex);
-		std::lock_guard<std::mutex> output_lock(overlay->output_mutex);
-		retry_aitum = overlay->binding == TimerBinding::AitumVertical && !overlay->vertical_output &&
-			      now - overlay->last_aitum_retry_ns >= 3 * NS_PER_SECOND;
-		if (retry_aitum)
-			overlay->last_aitum_retry_ns = now;
-	}
-	if (retry_aitum)
-		request_vertical_output_connection(overlay);
-}
-
-void overlay_render(void *data, gs_effect_t *)
-{
-	auto *overlay = static_cast<Overlay *>(data);
-	uint32_t width;
-	uint32_t height;
-	Layout layout;
-	int scale_percent;
-	int edge_margin;
-	bool show_logo;
-	bool show_date;
-	bool show_time;
-	bool show_timer;
-	{
-		std::lock_guard<std::mutex> lock(overlay->mutex);
-		width = overlay->width;
-		height = overlay->height;
-		layout = overlay->layout;
-		scale_percent = overlay->scale_percent;
-		edge_margin = overlay->edge_margin;
-		show_logo = overlay->show_logo;
-		show_date = overlay->show_date;
-		show_time = overlay->show_time;
-		show_timer = overlay->show_timer;
-	}
-	const float unit = (layout == Layout::Vertical)
-				   ? std::min(static_cast<float>(width) / 1440.0f, static_cast<float>(height) / 2560.0f)
-				   : std::min(static_cast<float>(width) / 2560.0f, static_cast<float>(height) / 1440.0f);
-	const float margin = static_cast<float>(edge_margin) * unit;
-	const float requested_scale = unit * static_cast<float>(scale_percent) / 100.0f;
-	const float available_width = std::max(static_cast<float>(width) - 2.0f * margin, 1.0f);
-	const float available_height = std::max(static_cast<float>(height) - 2.0f * margin, 1.0f);
-	const float fit_scale = std::min({available_width / 820.0f, available_width / 460.0f,
-					  available_height / 170.0f, available_height / 148.0f});
-	const float scale = std::min(requested_scale, fit_scale);
-	const float session_h = 170.0f * scale;
-	const float telemetry_w = 460.0f * scale;
-	const float session_x = margin;
-	const float session_y = static_cast<float>(height) - margin - session_h;
-	const float telemetry_x = static_cast<float>(width) - margin - telemetry_w;
-	const float telemetry_y = margin;
-
-	render_source(overlay->session_panel, session_x, session_y, scale, scale);
-	render_source(overlay->accent, session_x, session_y, scale, scale);
-	if (show_logo && overlay->logo) {
-		const float logo_native = static_cast<float>(std::max(obs_source_get_width(overlay->logo), 1U));
-		const float logo_size = 145.0f * scale;
-		render_source(overlay->logo, session_x + 18.0f * scale, session_y + 12.5f * scale,
-			      logo_size / logo_native, logo_size / logo_native);
-	}
-	const float text_x = session_x + (show_logo ? 176.0f : 30.0f) * scale;
-	render_source(overlay->label_text, text_x, session_y + 18.0f * scale, scale, scale);
-	render_source(overlay->title_text, text_x, session_y + 52.0f * scale, scale, scale);
-	render_source(overlay->log_text, text_x, session_y + 119.0f * scale, scale, scale);
-
-	if (show_date || show_time || show_timer) {
-		render_source(overlay->telemetry_panel, telemetry_x, telemetry_y, scale, scale);
-		render_source(overlay->time_text, telemetry_x + 178.0f * scale, telemetry_y + 13.0f * scale, scale, scale);
-		render_source(overlay->date_text, telemetry_x + 178.0f * scale, telemetry_y + 69.0f * scale, scale, scale);
-		render_source(overlay->timer_text, telemetry_x + 48.0f * scale, telemetry_y + 103.0f * scale, scale, scale);
-	}
-}
-
-const char *overlay_name(void *) { return obs_module_text("SourceName"); }
-
-void frontend_event(enum obs_frontend_event event, void *)
-{
-	if (event != OBS_FRONTEND_EVENT_STREAMING_STARTED && event != OBS_FRONTEND_EVENT_STREAMING_STOPPED)
-		return;
-	std::lock_guard<std::mutex> lock(g_instances_mutex);
-	for (Overlay *overlay : g_instances) {
-		TimerBinding binding;
-		{
-			std::lock_guard<std::mutex> instance_lock(overlay->mutex);
-			binding = overlay->binding;
-		}
-		if (binding != TimerBinding::MainObs)
-			continue;
-		if (event == OBS_FRONTEND_EVENT_STREAMING_STARTED)
-			timer_start(overlay);
-		else
-			timer_pause(overlay);
-	}
-}
-
-obs_source_info overlay_info = {};
-
-} // namespace
-
-bool obs_module_load(void)
-{
-	overlay_info.id = SOURCE_ID;
-	overlay_info.type = OBS_SOURCE_TYPE_INPUT;
-	overlay_info.output_flags =
-		OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW | OBS_SOURCE_COMPOSITE | OBS_SOURCE_SRGB;
-	overlay_info.get_name = overlay_name;
-	overlay_info.create = overlay_create;
-	overlay_info.destroy = overlay_destroy;
-	overlay_info.get_width = overlay_width;
-	overlay_info.get_height = overlay_height;
-	overlay_info.get_defaults = overlay_defaults;
-	overlay_info.get_properties = overlay_properties;
-	overlay_info.update = overlay_update;
-	overlay_info.video_tick = overlay_tick;
-	overlay_info.video_render = overlay_render;
-	overlay_info.enum_active_sources = overlay_enum_active_sources;
-	overlay_info.save = overlay_save;
-	overlay_info.load = overlay_load;
-	overlay_info.icon_type = OBS_ICON_TYPE_TEXT;
-	obs_register_source(&overlay_info);
-	obs_frontend_add_event_callback(frontend_event, nullptr);
-	blog(LOG_INFO, "[Curious Bipedal] Native session overlay loaded");
-	return true;
-}
-
-void obs_module_unload(void)
-{
-	obs_frontend_remove_event_callback(frontend_event, nullptr);
-	blog(LOG_INFO, "[Curious Bipedal] Native session overlay unloaded");
-}
-
-const char *obs_module_description(void)
-{
-	return "Native Curious Bipedal session overlay with independent OBS and Aitum Vertical timer bindings.";
-}
+	update_text_source(overlay->timer_text, overlay->show_timer ? std::string("ELAPSED  ") + timer_buffer : "", 36,
+			   true, overlay->opacity, rgba(239, 155, 61, 255), 404, 58, "center");
+	update_text_source(overlay->time_text, overlay->show_time ? time_string : "", 19, true, overlay->opacity,
+			   rgba(244, 241, 233, 255), 170, 36, "left");
+	update_text_source(overlay->date_text, overlay->show_date ? datß¾4¶‰Ëkºwµç}‰Í}¡½Ñ­•å}Ğ€¨°‰½½°ÁÉ•ÍÍ•¤)ì(%¥˜€¡ÁÉ•ÍÍ•¤($%Ñ¥µ•É}Ñ½±”¡ÍÑ…Ñ¥}…ÍĞñ=Ù•É±…ä€¨ø¡‘…Ñ„¤¤ì)ô()Ù½¥¡½Ñ­•å}É•Í•Ğ¡Ù½¥€©‘…Ñ„°½‰Í}¡½Ñ­•å}¥°½‰Í}¡½Ñ­•å}Ğ€¨°‰½½°ÁÉ•ÍÍ•¤)ì(%¥˜€¡ÁÉ•ÍÍ•¤($%Ñ¥µ•É}É•Í•Ğ¡ÍÑ…Ñ¥}…ÍĞñ=Ù•É±…ä€¨ø¡‘…Ñ„¤¤ì)ô()Ù½¥€©½Ù•É±…å}É•…Ñ”¡½‰Í}‘…Ñ…}Ğ€©Í•ÑÑ¥¹Ì°½‰Í}Í½ÕÉ•}Ğ€©Í½ÕÉ”¤)ì(%…ÕÑ¼€©½Ù•É±…ä€ô¹•Ü=Ù•É±…äì(%½Ù•É±…ä´ùÍ½ÕÉ”€ôÍ½ÕÉ”ì(%½Ù•É±…ä´ù±¥™•Ñ¥µ”´ù½Ù•É±…ä€ô½Ù•É±…äì(%½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}±•™Ğ€ôµ…­•}ÁÉ¥Ù…Ñ•}¥µ…•}Í½ÕÉ” ‰ÕÉ¥½ÕÌ	¥Á•‘…°Í•ÍÍ¥½¸Á…¹•°±•™Ğ…Àˆ°($$$$$$$€€€€€€‰…ÍÍ•ÑÌ½Í•ÍÍ¥½¸µÁ…¹•°µ±•™Ğ¹Á¹œˆ¤ì(%½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•°€ôµ…­•}ÁÉ¥Ù…Ñ•}¥µ…•}Í½ÕÉ” ‰ÕÉ¥½ÕÌ	¥Á•‘…°Í•ÍÍ¥½¸Á…¹•°™¥±°ˆ°($$$$$$$€‰…ÍÍ•ÑÌ½Í•ÍÍ¥½¸µÁ…¹•°µµ¥‘‘±”¹Á¹œˆ¤ì(%½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}É¥¡Ğ€ôµ…­•}ÁÉ¥Ù…Ñ•}¥µ…•}Í½ÕÉ” ‰ÕÉ¥½ÕÌ	¥Á•‘…°Í•ÍÍ¥½¸Á…¹•°É¥¡Ğ…Àˆ°($$$$$$$€€€€€€€‰…ÍÍ•ÑÌ½Í•ÍÍ¥½¸µÁ…¹•°µÉ¥¡Ğ¹Á¹œˆ¤ì(%½Ù•É±…ä´ùÑ•±•µ•ÑÉå}Á…¹•°€ôµ…­•}ÁÉ¥Ù…Ñ•}¥µ…•}Í½ÕÉ” ‰ÕÉ¥½ÕÌ	¥Á•‘…°É½Õ¹‘•Ñ•±•µ•ÑÉäÁ…¹•°ˆ°($$$$$$$€€€‰…ÍÍ•ÑÌ½Ñ•±•µ•ÑÉäµÁ…¹•°µÉ½Õ¹‘•¹Á¹œˆ¤ì(%½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}±•™Ñ}½Á…¥Ñå}™¥±Ñ•È€ô($%…ÑÑ…¡}½Á…¥Ñå}™¥±Ñ•È¡½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}±•™Ğ°€‰ÕÉ¥½ÕÌ	¥Á•‘…°Í•ÍÍ¥½¸Á…¹•°±•™Ğ½Á…¥Ñäˆ¤ì(%½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}½Á…¥Ñå}™¥±Ñ•È€ô($%…ÑÑ…¡}½Á…¥Ñå}™¥±Ñ•È¡½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•°°€‰ÕÉ¥½ÕÌ	¥Á•‘…°Í•ÍÍ¥½¸Á…¹•°™¥±°½Á…¥Ñäˆ¤ì(%½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}É¥¡Ñ}½Á…¥Ñå}™¥±Ñ•È€ô($%…ÑÑ…¡}½Á…¥Ñå}™¥±Ñ•È¡½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}É¥¡Ğ°€‰ÕÉ¥½ÕÌ	¥Á•‘…°Í•ÍÍ¥½¸Á…¹•°É¥¡Ğ½Á…¥Ñäˆ¤ì(%½Ù•É±…ä´ùÑ•±•µ•ÑÉå}Á…¹•±}½Á…¥Ñå}™¥±Ñ•È€ô($%…ÑÑ…¡}½Á…¥Ñå}™¥±Ñ•È¡½Ù•É±…ä´ùÑ•±•µ•ÑÉå}Á…¹•°°€‰ÕÉ¥½ÕÌ	¥Á•‘…°Ñ•±•µ•ÑÉäÁ…¹•°½Á…¥Ñäˆ¤ì(%½Ù•É±…ä´ù…•¹Ğ€ôµ…­•}ÁÉ¥Ù…Ñ•}Í½ÕÉ” ‰½±½É}Í½ÕÉ•}ØÌˆ°€‰ÕÉ¥½ÕÌ	¥Á•‘…°…•¹Ğˆ¤ì(%½Ù•É±…ä´ù±…‰•±}Ñ•áĞ€ôµ…­•}ÁÉ¥Ù…Ñ•}Í½ÕÉ” ‰Ñ•áÑ}‘¥Á±ÕÍ}ØÌˆ°€‰ÕÉ¥½ÕÌ	¥Á•‘…°±…‰•°ˆ¤ì(%½Ù•É±…ä´ùÑ¥Ñ±•}Ñ•áĞ€ôµ…­•}ÁÉ¥Ù…Ñ•}Í½ÕÉ” ‰Ñ•áÑ}‘¥Á±ÕÍ}ØÌˆ°€‰ÕÉ¥½ÕÌ	¥Á•‘…°Ñ¥Ñ±”ˆ¤ì(%½Ù•É±…ä´ù±½}Ñ•áĞ€ôµ…­•}ÁÉ¥Ù…Ñ•}Í½ÕÉ” ‰Ñ•áÑ}‘¥Á±ÕÍ}ØÌˆ°€‰ÕÉ¥½ÕÌ	¥Á•‘…°±½œˆ¤ì(%½Ù•É±…ä´ùÑ¥µ•}Ñ•áĞ€ôµ…­•}ÁÉ¥Ù…Ñ•}Í½ÕÉ” ‰Ñ•áÑ}‘¥Á±ÕÍ}ØÌˆ°€‰ÕÉ¥½ÕÌ	¥Á•‘…°Ñ¥µ”ˆ¤ì(%½Ù•É±…ä´ù‘…Ñ•}Ñ•áĞ€ôµ…­•}ÁÉ¥Ù…Ñ•}Í½ÕÉ” ‰Ñ•áÑ}‘¥Á±ÕÍ}ØÌˆ°€‰ÕÉ¥½ÕÌ	¥Á•‘…°‘…Ñ”ˆ¤ì(%½Ù•É±…ä´ùÑ¥µ•É}Ñ•áĞ€ôµ…­•}ÁÉ¥Ù…Ñ•}Í½ÕÉ” ‰Ñ•áÑ}‘¥Á±ÕÍ}ØÌˆ°€‰ÕÉ¥½ÕÌ	¥Á•‘…°Ñ¥µ•Èˆ¤ì((%¡…È€©±½½}Á…Ñ €ô½‰Í}µ½‘Õ±•}™¥±” ‰…ÍÍ•ÑÌ½ÕÉ¥½ÕÌµ‰¥Á•‘…°µÁÉ¥µ…Éäµ±åÁ µÍ…™”¹Á¹œˆ¤ì(%¥˜€¡±½½}Á…Ñ ¤ì($%½‰Í}‘…Ñ…}Ğ€©±½½}Í•ÑÑ¥¹Ì€ô½‰Í}‘…Ñ…}É•…Ñ” ¤ì($%½‰Í}‘…Ñ…}Í•Ñ}ÍÑÉ¥¹œ¡±½½}Í•ÑÑ¥¹Ì°€‰™¥±”ˆ°±½½}Á…Ñ ¤ì($%½‰Í}‘…Ñ…}Í•Ñ}‰½½°¡±½½}Í•ÑÑ¥¹Ì°€‰Õ¹±½…ˆ°™…±Í”¤ì($%½Ù•É±…ä´ù±½¼€ô½‰Í}Í½ÕÉ•}É•…Ñ•}ÁÉ¥Ù…Ñ” ‰¥µ…•}Í½ÕÉ”ˆ°€‰ÕÉ¥½ÕÌ	¥Á•‘…°…ÁÁÉ½Ù•±½¼ˆ°±½½}Í•ÑÑ¥¹Ì¤ì($%½‰Í}‘…Ñ…}É•±•…Í”¡±½½}Í•ÑÑ¥¹Ì¤ì($%‰™É•”¡±½½}Á…Ñ ¤ì(%ô(%½Ù•É±…ä´ù±½½}½Á…¥Ñå}™¥±Ñ•È€ô…ÑÑ…¡}½Á…¥Ñå}™¥±Ñ•È¡½Ù•É±…ä´ù±½¼°€‰ÕÉ¥½ÕÌ	¥Á•‘…°±½¼½Á…¥Ñäˆ¤ì(%…‘‘}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}±•™Ğ¤ì(%…‘‘}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•°¤ì(%…‘‘}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}É¥¡Ğ¤ì(%…‘‘}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ùÑ•±•µ•ÑÉå}Á…¹•°¤ì(%…‘‘}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ù…•¹Ğ¤ì(%…‘‘}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ù±½¼¤ì(%…‘‘}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ù±…‰•±}Ñ•áĞ¤ì(%…‘‘}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ùÑ¥Ñ±•}Ñ•áĞ¤ì(%…‘‘}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ù±½}Ñ•áĞ¤ì(%…‘‘}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ùÑ¥µ•}Ñ•áĞ¤ì(%…‘‘}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ù‘…Ñ•}Ñ•áĞ¤ì(%…‘‘}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ùÑ¥µ•É}Ñ•áĞ¤ì((%½Ù•É±…ä´ùÍÑ…ÉÑ}Á…ÕÍ•}¡½Ñ­•ä€ô½‰Í}¡½Ñ­•å}É•¥ÍÑ•É}Í½ÕÉ”¡Í½ÕÉ”°€‰ÕÉ¥½ÕÍ}‰¥Á•‘…°¹Ñ¥µ•È¹ÍÑ…ÉÑ}Á…ÕÍ”ˆ°($$$$$$$$€½‰Í}µ½‘Õ±•}Ñ•áĞ ‰!½Ñ­•åMÑ…ÉÑA…ÕÍ”ˆ¤°¡½Ñ­•å}ÍÑ…ÉÑ}Á…ÕÍ”°½Ù•É±…ä¤ì(%½Ù•É±…ä´ùÉ•Í•Ñ}¡½Ñ­•ä€ô½‰Í}¡½Ñ­•å}É•¥ÍÑ•É}Í½ÕÉ”¡Í½ÕÉ”°€‰ÕÉ¥½ÕÍ}‰¥Á•‘…°¹Ñ¥µ•È¹É•Í•Ğˆ°($$$$$$%½‰Í}µ½‘Õ±•}Ñ•áĞ ‰!½Ñ­•åI•Í•Ğˆ¤°¡½Ñ­•å}É•Í•Ğ°½Ù•É±…ä¤ì(%ì($%ÍÑèé±½­}Õ…ÉñÍÑèéµÕÑ•àø±½¬¡}¥¹ÍÑ…¹•Í}µÕÑ•à¤ì($%}¥¹ÍÑ…¹•Ì¹ÁÕÍ¡}‰…¬¡½Ù•É±…ä¤ì(%ô(%½Ù•É±…å}ÕÁ‘…Ñ”¡½Ù•É±…ä°Í•ÑÑ¥¹Ì¤ì(%É•ÑÕÉ¸½Ù•É±…äì)ô()Ù½¥É•±•…Í•}Í½ÕÉ”¡½‰Í}Í½ÕÉ•}Ğ€¨™Í½ÕÉ”¤)ì(%¥˜€¡Í½ÕÉ”¤ì($%½‰Í}Í½ÕÉ•}É•±•…Í”¡Í½ÕÉ”¤ì($%Í½ÕÉ”€ô¹Õ±±ÁÑÈì(%ô)ô()Ù½¥½Ù•É±…å}‘•ÍÑÉ½ä¡Ù½¥€©‘…Ñ„¤)ì(%…ÕÑ¼€©½Ù•É±…ä€ôÍÑ…Ñ¥}…ÍĞñ=Ù•É±…ä€¨ø¡‘…Ñ„¤ì(%½Ù•É±…ä´ù‘•ÍÑÉ½å¥¹œ¹ÍÑ½É”¡ÑÉÕ”°ÍÑèéµ•µ½Éå}½É‘•É}É•±•…Í”¤ì(%ì($%ÍÑèé±½­}Õ…ÉñÍÑèéµÕÑ•àø±¥™•Ñ¥µ•}±½¬¡½Ù•É±…ä´ù±¥™•Ñ¥µ”´ùµÕÑ•à¤ì($%½Ù•É±…ä´ù±¥™•Ñ¥µ”´ù½Ù•É±…ä€ô¹Õ±±ÁÑÈì(%ô(%ì($%ÍÑèé±½­}Õ…ÉñÍÑèéµÕÑ•àø±½¬¡}¥¹ÍÑ…¹•Í}µÕÑ•à¤ì($%}¥¹ÍÑ…¹•Ì¹•É…Í”¡ÍÑèéÉ•µ½Ù”¡}¥¹ÍÑ…¹•Ì¹‰•¥¸ ¤°}¥¹ÍÑ…¹•Ì¹•¹ ¤°½Ù•É±…ä¤°}¥¹ÍÑ…¹•Ì¹•¹ ¤¤ì(%ô(%‘¥Í½¹¹•Ñ}Ù•ÉÑ¥…±}½ÕÑÁÕĞ¡½Ù•É±…ä¤ì(%É•µ½Ù•}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}±•™Ğ¤ì(%É•µ½Ù•}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•°¤ì(%É•µ½Ù•}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}É¥¡Ğ¤ì(%É•µ½Ù•}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ùÑ•±•µ•ÑÉå}Á…¹•°¤ì(%É•µ½Ù•}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ù…•¹Ğ¤ì(%É•µ½Ù•}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ù±½¼¤ì(%É•µ½Ù•}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ù±…‰•±}Ñ•áĞ¤ì(%É•µ½Ù•}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ùÑ¥Ñ±•}Ñ•áĞ¤ì(%É•µ½Ù•}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ù±½}Ñ•áĞ¤ì(%É•µ½Ù•}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ùÑ¥µ•}Ñ•áĞ¤ì(%É•µ½Ù•}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ù‘…Ñ•}Ñ•áĞ¤ì(%É•µ½Ù•}…Ñ¥Ù•}¡¥±¡½Ù•É±…ä°½Ù•É±…ä´ùÑ¥µ•É}Ñ•áĞ¤ì(%¥˜€¡½Ù•É±…ä´ù±½¼€˜˜½Ù•É±…ä´ù±½½}½Á…¥Ñå}™¥±Ñ•È¤($%½‰Í}Í½ÕÉ•}™¥±Ñ•É}É•µ½Ù”¡½Ù•É±…ä´ù±½¼°½Ù•É±…ä´ù±½½}½Á…¥Ñå}™¥±Ñ•È¤ì(%¥˜€¡½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}±•™Ğ€˜˜½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}±•™Ñ}½Á…¥Ñå}™¥±Ñ•È¤($%½‰Í}Í½ÕÉ•}™¥±Ñ•É}É•µ½Ù”¡½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}±•™Ğ°½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}±•™Ñ}½Á…¥Ñå}™¥±Ñ•È¤ì(%¥˜€¡½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•°€˜˜½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}½Á…¥Ñå}™¥±Ñ•È¤($%½‰Í}Í½ÕÉ•}™¥±Ñ•É}É•µ½Ù”¡½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•°°½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}½Á…¥Ñå}™¥±Ñ•È¤ì(%¥˜€¡½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}É¥¡Ğ€˜˜½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}É¥¡Ñ}½Á…¥Ñå}™¥±Ñ•È¤($%½‰Í}Í½ÕÉ•}™¥±Ñ•É}É•µ½Ù”¡½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}É¥¡Ğ°½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}É¥¡Ñ}½Á…¥Ñå}™¥±Ñ•È¤ì(%¥˜€¡½Ù•É±…ä´ùÑ•±•µ•ÑÉå}Á…¹•°€˜˜½Ù•É±…ä´ùÑ•±•µ•ÑÉå}Á…¹•±}½Á…¥Ñå}™¥±Ñ•È¤($%½‰Í}Í½ÕÉ•}™¥±Ñ•É}É•µ½Ù”¡½Ù•É±…ä´ùÑ•±•µ•ÑÉå}Á…¹•°°½Ù•É±…ä´ùÑ•±•µ•ÑÉå}Á…¹•±}½Á…¥Ñå}™¥±Ñ•È¤ì(%É•±•…Í•}Í½ÕÉ”¡½Ù•É±…ä´ù±½½}½Á…¥Ñå}™¥±Ñ•È¤ì(%É•±•…Í•}Í½ÕÉ”¡½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}±•™Ñ}½Á…¥Ñå}™¥±Ñ•È¤ì(%É•±•…Í•}Í½ÕÉ”¡½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}½Á…¥Ñå}™¥±Ñ•È¤ì(%É•±•…Í•}Í½ÕÉ”¡½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}É¥¡Ñ}½Á…¥Ñå}™¥±Ñ•È¤ì(%É•±•…Í•}Í½ÕÉ”¡½Ù•É±…ä´ùÑ•±•µ•ÑÉå}Á…¹•±}½Á…¥Ñå}™¥±Ñ•È¤ì(%É•±•…Í•}Í½ÕÉ”¡½Ù•É±…ä´ù±½¼¤ì(%É•±•…Í•}Í½ÕÉ”¡½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}±•™Ğ¤ì(%É•±•…Í•}Í½ÕÉ”¡½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•°¤ì(%É•±•…Í•}Í½ÕÉ”¡½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}É¥¡Ğ¤ì(%É•±•…Í•}Í½ÕÉ”¡½Ù•É±…ä´ùÑ•±•µ•ÑÉå}Á…¹•°¤ì(%É•±•…Í•}Í½ÕÉ”¡½Ù•É±…ä´ù…•¹Ğ¤ì(%É•±•…Í•}Í½ÕÉ”¡½Ù•É±…ä´ù±…‰•±}Ñ•áĞ¤ì(%É•±•…Í•}Í½ÕÉ”¡½Ù•É±…ä´ùÑ¥Ñ±•}Ñ•áĞ¤ì(%É•±•…Í•}Í½ÕÉ”¡½Ù•É±…ä´ù±½}Ñ•áĞ¤ì(%É•±•…Í•}Í½ÕÉ”¡½Ù•É±…ä´ùÑ¥µ•}Ñ•áĞ¤ì(%É•±•…Í•}Í½ÕÉ”¡½Ù•É±…ä´ù‘…Ñ•}Ñ•áĞ¤ì(%É•±•…Í•}Í½ÕÉ”¡½Ù•É±…ä´ùÑ¥µ•É}Ñ•áĞ¤ì(%‘•±•Ñ”½Ù•É±…äì)ô()Õ¥¹ĞÌÉ}Ğ½Ù•É±…å}İ¥‘Ñ ¡Ù½¥€©‘…Ñ„¤)ì(%…ÕÑ¼€©½Ù•É±…ä€ôÍÑ…Ñ¥}…ÍĞñ=Ù•É±…ä€¨ø¡‘…Ñ„¤ì(%ÍÑèé±½­}Õ…ÉñÍÑèéµÕÑ•àø±½¬¡½Ù•É±…ä´ùµÕÑ•à¤ì(%É•ÑÕÉ¸½Ù•É±…ä´ùİ¥‘Ñ ì)ô()Õ¥¹ĞÌÉ}Ğ½Ù•É±…å}¡•¥¡Ğ¡Ù½¥€©‘…Ñ„¤)ì(%…ÕÑ¼€©½Ù•É±…ä€ôÍÑ…Ñ¥}…ÍĞñ=Ù•É±…ä€¨ø¡‘…Ñ„¤ì(%ÍÑèé±½­}Õ…ÉñÍÑèéµÕÑ•àø±½¬¡½Ù•É±…ä´ùµÕÑ•à¤ì(%É•ÑÕÉ¸½Ù•É±…ä´ù¡•¥¡Ğì)ô()Ù½¥½Ù•É±…å}•¹Õµ}…Ñ¥Ù•}Í½ÕÉ•Ì¡Ù½¥€©‘…Ñ„°½‰Í}Í½ÕÉ•}•¹Õµ}ÁÉ½}Ğ•¹Õµ}…±±‰…¬°Ù½¥€©Á…É…´¤)ì(%…ÕÑ¼€©½Ù•É±…ä€ôÍÑ…Ñ¥}…ÍĞñ=Ù•É±…ä€¨ø¡‘…Ñ„¤ì(%½‰Í}Í½ÕÉ•}Ğ€©¡¥±‘É•¹mt€ôí½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}±•™Ğ°€½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•°°($$$$€€€½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}É¥¡Ğ°½Ù•É±…ä´ùÑ•±•µ•ÑÉå}Á…¹•°°($$$$€€€½Ù•É±…ä´ù…•¹Ğ°€€€€€€€€€€€€€½Ù•É±…ä´ù±½¼°($$$$€€€½Ù•É±…ä´ù±…‰•±}Ñ•áĞ°€€€€€€€€€½Ù•É±…ä´ùÑ¥Ñ±•}Ñ•áĞ°($$$$€€€½Ù•É±…ä´ù±½}Ñ•áĞ°€€€€€€€€€€€½Ù•É±…ä´ùÑ¥µ•}Ñ•áĞ°($$$$€€€½Ù•É±…ä´ù‘…Ñ•}Ñ•áĞ°€€€€€€€€€€½Ù•É±…ä´ùÑ¥µ•É}Ñ•áÑôì(%™½È€¡½‰Í}Í½ÕÉ•}Ğ€©¡¥±€è¡¥±‘É•¸¤ì($%¥˜€¡¡¥±¤($$%•¹Õµ}…±±‰…¬¡½Ù•É±…ä´ùÍ½ÕÉ”°¡¥±°Á…É…´¤ì(%ô)ô()Ù½¥½Ù•É±…å}Í…Ù”¡Ù½¥€©‘…Ñ„°½‰Í}‘…Ñ…}Ğ€©Í•ÑÑ¥¹Ì¤)ì(%…ÕÑ¼€©½Ù•É±…ä€ôÍÑ…Ñ¥}…ÍĞñ=Ù•É±…ä€¨ø¡‘…Ñ„¤ì(%ÍÑèé±½­}Õ…ÉñÍÑèéµÕÑ•àø±½¬¡½Ù•É±…ä´ùµÕÑ•à¤ì(%½‰Í}‘…Ñ…}Í•Ñ}¥¹Ğ¡Í•ÑÑ¥¹Ì°€‰Ñ¥µ•É}•±…ÁÍ•‘}¹Ìˆ°ÍÑ…Ñ¥}…ÍĞñ±½¹œ±½¹œø¡•±…ÁÍ•‘}¹Í}±½­•¡½Ù•É±…ä°½Í}•ÑÑ¥µ•}¹Ì ¤¤¤¤ì(%½‰Í}‘…Ñ…}Í•Ñ}‰½½°¡Í•ÑÑ¥¹Ì°€‰Ñ¥µ•É}İ…Í}ÉÕ¹¹¥¹œˆ°½Ù•É±…ä´ùÑ¥µ•É}ÉÕ¹¹¥¹œ¤ì)ô()Ù½¥½Ù•É±…å}±½…¡Ù½¥€©‘…Ñ„°½‰Í}‘…Ñ…}Ğ€©Í•ÑÑ¥¹Ì¤)ì(%…ÕÑ¼€©½Ù•É±…ä€ôÍÑ…Ñ¥}…ÍĞñ=Ù•É±…ä€¨ø¡‘…Ñ„¤ì(%ÍÑèé±½­}Õ…ÉñÍÑèéµÕÑ•àø±½¬¡½Ù•É±…ä´ùµÕÑ•à¤ì(%¥˜€ …½‰Í}‘…Ñ…}¡…Í}ÕÍ•É}Ù…±Õ”¡Í•ÑÑ¥¹Ì°€‰Ñ¥µ•É}•±…ÁÍ•‘}¹Ìˆ¤¤($%É•ÑÕÉ¸ì(%½Ù•É±…ä´ù•±…ÁÍ•‘}‰•™½É•}ÍÑ…ÉÑ}¹Ì€ô($%ÍÑ…Ñ¥}…ÍĞñÕ¥¹ĞØÑ}Ğø¡ÍÑèéµ…àñ±½¹œ±½¹œø À°½‰Í}‘…Ñ…}•Ñ}¥¹Ğ¡Í•ÑÑ¥¹Ì°€‰Ñ¥µ•É}•±…ÁÍ•‘}¹Ìˆ¤¤¤ì(%½Ù•É±…ä´ùÑ¥µ•É}ÍÑ…ÉÑ•‘}¹Ì€ô½Í}•ÑÑ¥µ•}¹Ì ¤ì(%¥˜€¡½Ù•É±…ä´ù‰¥¹‘¥¹œ€ôôQ¥µ•É	¥¹‘¥¹œèé5…¹Õ…°¤($%½Ù•É±…ä´ùÑ¥µ•É}ÉÕ¹¹¥¹œ€ô½‰Í}‘…Ñ…}•Ñ}‰½½°¡Í•ÑÑ¥¹Ì°€‰Ñ¥µ•É}İ…Í}ÉÕ¹¹¥¹œˆ¤ì)ô()Ù½¥½Ù•É±…å}Ñ¥¬¡Ù½¥€©‘…Ñ„°™±½…Ğ¤)ì(%…ÕÑ¼€©½Ù•É±…ä€ôÍÑ…Ñ¥}…ÍĞñ=Ù•É±…ä€¨ø¡‘…Ñ„¤ì(%½¹ÍĞÕ¥¹ĞØÑ}Ğ¹½Ü€ô½Í}•ÑÑ¥µ•}¹Ì ¤ì(%ì($%ÍÑèé±½­}Õ…ÉñÍÑèéµÕÑ•àø±½¬¡½Ù•É±…ä´ùµÕÑ•à¤ì($%¥˜€¡¹½Ü€´½Ù•É±…ä´ù±…ÍÑ}±½­}ÕÁ‘…Ñ•}¹Ì€øô9M}AI}M=9€¼€Ğ¤ì($$%ÕÁ‘…Ñ•}±½­}¡¥±‘É•¸¡½Ù•É±…ä°¹½Ü¤ì($$%½Ù•É±…ä´ù±…ÍÑ}±½­}ÕÁ‘…Ñ•}¹Ì€ô¹½Üì($%ô(%ô(%‰½½°É•ÑÉå}…¥ÑÕ´€ô™…±Í”ì(%ì($%ÍÑèé±½­}Õ…ÉñÍÑèéµÕÑ•àøÍÑ…Ñ•}±½¬¡½Ù•É±…ä´ùµÕÑ•à¤ì($%ÍÑèé±½­}Õ…ÉñÍÑèéµÕÑ•àø½ÕÑÁÕÑ}±½¬¡½Ù•É±…ä´ù½ÕÑÁÕÑ}µÕÑ•à¤ì($%É•ÑÉå}…¥ÑÕ´€ô½Ù•É±…ä´ù‰¥¹‘¥¹œ€ôôQ¥µ•É	¥¹‘¥¹œèé¥ÑÕµY•ÉÑ¥…°€˜˜€…½Ù•É±…ä´ùÙ•ÉÑ¥…±}½ÕÑÁÕĞ€˜˜($$$€€€€€¹½Ü€´½Ù•É±…ä´ù±…ÍÑ}…¥ÑÕµ}É•ÑÉå}¹Ì€øô€Ì€¨9M}AI}M=9ì($%¥˜€¡É•ÑÉå}…¥ÑÕ´¤($$%½Ù•É±…ä´ù±…ÍÑ}…¥ÑÕµ}É•ÑÉå}¹Ì€ô¹½Üì(%ô(%¥˜€¡É•ÑÉå}…¥ÑÕ´¤($%É•ÅÕ•ÍÑ}Ù•ÉÑ¥…±}½ÕÑÁÕÑ}½¹¹•Ñ¥½¸¡½Ù•É±…ä¤ì)ô()Ù½¥½Ù•É±…å}É•¹‘•È¡Ù½¥€©‘…Ñ„°Í}•™™•Ñ}Ğ€¨¤)ì(%…ÕÑ¼€©½Ù•É±…ä€ôÍÑ…Ñ¥}…ÍĞñ=Ù•É±…ä€¨ø¡‘…Ñ„¤ì(%Õ¥¹ĞÌÉ}Ğİ¥‘Ñ ì(%Õ¥¹ĞÌÉ}Ğ¡•¥¡Ğì(%1…å½ÕĞ±…å½ÕĞì(%¥¹ĞÍ…±•}Á•É•¹Ğì(%¥¹Ğ•‘•}µ…É¥¸ì(%‰½½°Í¡½İ}±½¼ì(%‰½½°Í¡½İ}‘…Ñ”ì(%‰½½°Í¡½İ}Ñ¥µ”ì(%‰½½°Í¡½İ}Ñ¥µ•Èì(%ì($%ÍÑèé±½­}Õ…ÉñÍÑèéµÕÑ•àø±½¬¡½Ù•É±…ä´ùµÕÑ•à¤ì($%İ¥‘Ñ €ô½Ù•É±…ä´ùİ¥‘Ñ ì($%¡•¥¡Ğ€ô½Ù•É±…ä´ù¡•¥¡Ğì($%±…å½ÕĞ€ô½Ù•É±…ä´ù±…å½ÕĞì($%Í…±•}Á•É•¹Ğ€ô½Ù•É±…ä´ùÍ…±•}Á•É•¹Ğì($%•‘•}µ…É¥¸€ô½Ù•É±…ä´ù•‘•}µ…É¥¸ì($%Í¡½İ}±½¼€ô½Ù•É±…ä´ùÍ¡½İ}±½¼ì($%Í¡½İ}‘…Ñ”€ô½Ù•É±…ä´ùÍ¡½İ}‘…Ñ”ì($%Í¡½İ}Ñ¥µ”€ô½Ù•É±…ä´ùÍ¡½İ}Ñ¥µ”ì($%Í¡½İ}Ñ¥µ•È€ô½Ù•É±…ä´ùÍ¡½İ}Ñ¥µ•Èì(%ô(%½¹ÍĞ™±½…ĞÕ¹¥Ğ€ô€¡±…å½ÕĞ€ôô1…å½ÕĞèéY•ÉÑ¥…°¤($$$$€€€üÍÑèéµ¥¸¡ÍÑ…Ñ¥}…ÍĞñ™±½…Ğø¡İ¥‘Ñ ¤€¼€ÄĞĞÀ¸Á˜°ÍÑ…Ñ¥}…ÍĞñ™±½…Ğø¡¡•¥¡Ğ¤€¼€ÈÔØÀ¸Á˜¤($$$$€€€èÍÑèéµ¥¸¡ÍÑ…Ñ¥}…ÍĞñ™±½…Ğø¡İ¥‘Ñ ¤€¼€ÈÔØÀ¸Á˜°ÍÑ…Ñ¥}…ÍĞñ™±½…Ğø¡¡•¥¡Ğ¤€¼€ÄĞĞÀ¸Á˜¤ì(%½¹ÍĞ™±½…Ğµ…É¥¸€ôÍÑ…Ñ¥}…ÍĞñ™±½…Ğø¡•‘•}µ…É¥¸¤€¨Õ¹¥Ğì(%½¹ÍĞ™±½…ĞÉ•ÅÕ•ÍÑ•‘}Í…±”€ôÕ¹¥Ğ€¨ÍÑ…Ñ¥}…ÍĞñ™±½…Ğø¡Í…±•}Á•É•¹Ğ¤€¼€ÄÀÀ¸Á˜ì(%½¹ÍĞ™±½…Ğ…Ù…¥±…‰±•}İ¥‘Ñ €ôÍÑèéµ…à¡ÍÑ…Ñ¥}…ÍĞñ™±½…Ğø¡İ¥‘Ñ ¤€´€È¸Á˜€¨µ…É¥¸°€Ä¸Á˜¤ì(%½¹ÍĞ™±½…Ğ…Ù…¥±…‰±•}¡•¥¡Ğ€ôÍÑèéµ…à¡ÍÑ…Ñ¥}…ÍĞñ™±½…Ğø¡¡•¥¡Ğ¤€´€È¸Á˜€¨µ…É¥¸°€Ä¸Á˜¤ì(%½¹ÍĞ…ÕÑ¼Í½ÕÉ•}İ¥‘Ñ €ômt¡½‰Í}Í½ÕÉ•}Ğ€©Í½ÕÉ”¤ìÉ•ÑÕÉ¸Í½ÕÉ”€ü½‰Í}Í½ÕÉ•}•Ñ}İ¥‘Ñ ¡Í½ÕÉ”¤€è€ÁTìôì(%½¹ÍĞ™±½…ĞÍ•ÍÍ¥½¹}Ñ•áÑ}İ¥‘Ñ €ôÍÑ…Ñ¥}…ÍĞñ™±½…Ğø ($%ÍÑèéµ…à¡íÍ½ÕÉ•}İ¥‘Ñ ¡½Ù•É±…ä´ù±…‰•±}Ñ•áĞ¤°Í½ÕÉ•}İ¥‘Ñ ¡½Ù•É±…ä´ùÑ¥Ñ±•}Ñ•áĞ¤°($$$€Í½ÕÉ•}İ¥‘Ñ ¡½Ù•É±…ä´ù±½}Ñ•áĞ¥ô¤¤ì(%½¹ÍĞ™±½…ĞÍ•ÍÍ¥½¹}½¹Ñ•¹Ñ}à€ôÍ¡½İ}±½¼€ü€ÄØÀ¸Á˜€è€ÌÀ¸Á˜ì(%½¹ÍĞ™±½…ĞÍ•ÍÍ¥½¹}¹…Ñ¥Ù•}İ¥‘Ñ €ô($%ÍÑèéµ…à¡Í•ÍÍ¥½¹}½¹Ñ•¹Ñ}à€¬Í•ÍÍ¥½¹}Ñ•áÑ}İ¥‘Ñ €¬€ÌÀ¸Á˜°Í¡½İ}±½¼€ü€ÌØÀ¸Á˜€è€ÈØÀ¸Á˜¤ì(%½¹ÍĞ™±½…Ğ™¥Ñ}Í…±”€ôÍÑèéµ¥¸¡í…Ù…¥±…‰±•}İ¥‘Ñ €¼Í•ÍÍ¥½¹}¹…Ñ¥Ù•}İ¥‘Ñ °…Ù…¥±…‰±•}İ¥‘Ñ €¼€ĞØÀ¸Á˜°($$$$$€…Ù…¥±…‰±•}¡•¥¡Ğ€¼€ÄĞà¸Á˜°…Ù…¥±…‰±•}¡•¥¡Ğ€¼€ÄÈĞ¸Á™ô¤ì(%½¹ÍĞ™±½…ĞÍ…±”€ôÍÑèéµ¥¸¡É•ÅÕ•ÍÑ•‘}Í…±”°™¥Ñ}Í…±”¤ì(%½¹ÍĞ™±½…ĞÍ•ÍÍ¥½¹} €ô€ÄĞà¸Á˜€¨Í…±”ì(%½¹ÍĞ™±½…ĞÑ•±•µ•ÑÉå}Ü€ô€ĞØÀ¸Á˜€¨Í…±”ì(%½¹ÍĞ™±½…ĞÍ•ÍÍ¥½¹}à€ôµ…É¥¸ì(%½¹ÍĞ™±½…ĞÍ•ÍÍ¥½¹}ä€ôÍÑ…Ñ¥}…ÍĞñ™±½…Ğø¡¡•¥¡Ğ¤€´µ…É¥¸€´Í•ÍÍ¥½¹} ì(%½¹ÍĞ™±½…ĞÑ•±•µ•ÑÉå}à€ôÍÑ…Ñ¥}…ÍĞñ™±½…Ğø¡İ¥‘Ñ ¤€´µ…É¥¸€´Ñ•±•µ•ÑÉå}Üì(%½¹ÍĞ™±½…ĞÑ•±•µ•ÑÉå}ä€ôµ…É¥¸ì((%½¹ÍÑ•áÁÈ™±½…ĞÁ…¹•±}…Á}İ¥‘Ñ €ô€Èà¸Á˜ì(%É•¹‘•É}Í½ÕÉ”¡½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}±•™Ğ°Í•ÍÍ¥½¹}à°Í•ÍÍ¥½¹}ä°Í…±”°Í…±”¤ì(%É•¹‘•É}Í½ÕÉ”¡½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•°°Í•ÍÍ¥½¹}à€¬Á…¹•±}…Á}İ¥‘Ñ €¨Í…±”°Í•ÍÍ¥½¹}ä°($$€€€€€ÍÑèéµ…à¡Í•ÍÍ¥½¹}¹…Ñ¥Ù•}İ¥‘Ñ €´€È¸Á˜€¨Á…¹•±}…Á}İ¥‘Ñ °€Ä¸Á˜¤€¨Í…±”°Í…±”¤ì(%É•¹‘•É}Í½ÕÉ”¡½Ù•É±…ä´ùÍ•ÍÍ¥½¹}Á…¹•±}É¥¡Ğ°Í•ÍÍ¥½¹}à€¬€¡Í•ÍÍ¥½¹}¹…Ñ¥Ù•}İ¥‘Ñ €´Á…¹•±}…Á}İ¥‘Ñ ¤€¨Í…±”°($$€€€€€Í•ÍÍ¥½¹}ä°Í…±”°Í…±”¤ì(%É•¹‘•É}Í½ÕÉ”¡½Ù•É±…ä´ù…•¹Ğ°Í•ÍÍ¥½¹}à°Í•ÍÍ¥½¹}ä€¬€Èà¸Á˜€¨Í…±”°Í…±”°Í…±”¤ì(%¥˜€¡Í¡½İ}±½¼€˜˜½Ù•É±…ä´ù±½¼¤ì($%½¹ÍĞ™±½…Ğ±½½}¹…Ñ¥Ù”€ôÍÑ…Ñ¥}…ÍĞñ™±½…Ğø¡ÍÑèéµ…à¡½‰Í}Í½ÕÉ•}•Ñ}İ¥‘Ñ ¡½Ù•É±…ä´ù±½¼¤°€ÅT¤¤ì($%½¹ÍĞ™±½…Ğ±½½}Í¥é”€ô€ÄÈà¸Á˜€¨Í…±”ì($%É•¹‘•É}Í½ÕÉ”¡½Ù•É±…ä´ù±½¼°Í•ÍÍ¥½¹}à€¬€ÄØ¸Á˜€¨Í…±”°Í•ÍÍ¥½¹}ä€¬€ÄÀ¸Á˜€¨Í…±”°($$$€€€€€±½½}Í¥é”€¼±½½}¹…Ñ¥Ù”°±½½}Í¥é”€¼±½½}¹…Ñ¥Ù”¤ì(%ô(%½¹ÍĞ™±½…ĞÑ•áÑ}à€ôÍ•ÍÍ¥½¹}à€¬€¡Í¡½İ}±½¼€ü€ÄØÀ¸Á˜€è€ÌÀ¸Á˜¤€¨Í…±”ì(%É•¹‘•É}Í½ÕÉ”¡½Ù•É±…ä´ù±…‰•±}Ñ•áĞ°Ñ•áÑ}à°Í•ÍÍ¥½¹}ä€¬€ÄÀ¸Á˜€¨Í…±”°Í…±”°Í…±”¤ì(%É•¹‘•É}Í½ÕÉ”¡½Ù•É±…ä´ùÑ¥Ñ±•}Ñ•áĞ°Ñ•áÑ}à°Í•ÍÍ¥½¹}ä€¬€Ìà¸Á˜€¨Í…±”°Í…±”°Í…±”¤ì(%É•¹‘•É}Í½ÕÉ”¡½Ù•É±…ä´ù±½}Ñ•áĞ°Ñ•áÑ}à°Í•ÍÍ¥½¹}ä€¬€äà¸Á˜€¨Í…±”°Í…±”°Í…±”¤ì((%¥˜€¡Í¡½İ}‘…Ñ”ñğÍ¡½İ}Ñ¥µ”ñğÍ¡½İ}Ñ¥µ•È¤ì($%É•¹‘•É}Í½ÕÉ”¡½Ù•É±…ä´ùÑ•±•µ•ÑÉå}Á…¹•°°Ñ•±•µ•ÑÉå}à°Ñ•±•µ•ÑÉå}ä°Í…±”°Í…±”¤ì($%É•¹‘•É}Í½ÕÉ”¡½Ù•É±…ä´ùÑ¥µ•É}Ñ•áĞ°Ñ•±•µ•ÑÉå}à€¬€Èà¸Á˜€¨Í…±”°Ñ•±•µ•ÑÉå}ä€¬€à¸Á˜€¨Í…±”°Í…±”°Í…±”¤ì($%É•¹‘•É}Í½ÕÉ”¡½Ù•É±…ä´ùÑ¥µ•}Ñ•áĞ°Ñ•±•µ•ÑÉå}à€¬€Ğà¸Á˜€¨Í…±”°Ñ•±•µ•ÑÉå}ä€¬€ÜÔ¸Á˜€¨Í…±”°Í…±”°Í…±”¤ì($%É•¹‘•É}Í½ÕÉ”¡½Ù•É±…ä´ù‘…Ñ•}Ñ•áĞ°Ñ•±•µ•ÑÉå}à€¬€ÈÈÈ¸Á˜€¨Í…±”°Ñ•±•µ•ÑÉå}ä€¬€ÜÔ¸Á˜€¨Í…±”°Í…±”°Í…±”¤ì(%ô)ô()½¹ÍĞ¡…È€©½Ù•É±…å}¹…µ”¡Ù½¥€¨¤ìÉ•ÑÕÉ¸½‰Í}µ½‘Õ±•}Ñ•áĞ ‰M½ÕÉ•9…µ”ˆ¤ìô()Ù½¥™É½¹Ñ•¹‘}•Ù•¹Ğ¡•¹Õ´½‰Í}™É½¹Ñ•¹‘}•Ù•¹Ğ•Ù•¹Ğ°Ù½¥€¨¤)ì(%¥˜€¡•Ù•¹Ğ€„ô=	M}I=9Q9}Y9Q}MQI5%9}MQIQ€˜˜•Ù•¹Ğ€„ô=	M}I=9Q9}Y9Q}MQI5%9}MQ=AA¤($%É•ÑÕÉ¸ì(%ÍÑèé±½­}Õ…ÉñÍÑèéµÕÑ•àø±½¬¡}¥¹ÍÑ…¹•Í}µÕÑ•à¤ì(%™½È€¡=Ù•É±…ä€©½Ù•É±…ä€è}¥¹ÍÑ…¹•Ì¤ì($%Q¥µ•É	¥¹‘¥¹œ‰¥¹‘¥¹œì($%ì($$%ÍÑèé±½­}Õ…ÉñÍÑèéµÕÑ•àø¥¹ÍÑ…¹•}±½¬¡½Ù•É±…ä´ùµÕÑ•à¤ì($$%‰¥¹‘¥¹œ€ô½Ù•É±…ä´ù‰¥¹‘¥¹œì($%ô($%¥˜€¡‰¥¹‘¥¹œ€„ôQ¥µ•É	¥¹‘¥¹œèé5…¥¹=‰Ì¤($$%½¹Ñ¥¹Õ”ì($%¥˜€¡•Ù•¹Ğ€ôô=	M}I=9Q9}Y9Q}MQI5%9}MQIQ¤($$%Ñ¥µ•É}ÍÑ…ÉĞ¡½Ù•É±…ä¤ì($%•±Í”($$%Ñ¥µ•É}Á…ÕÍ”¡½Ù•É±…ä¤ì(%ô)ô()½‰Í}Í½ÕÉ•}¥¹™¼½Ù•É±…å}¥¹™¼€ôíôì()ô€¼¼¹…µ•ÍÁ…”()‰½½°½‰Í}µ½‘Õ±•}±½…¡Ù½¥¤)ì(%½Ù•É±…å}¥¹™¼¹¥€ôM=UI}%ì(%½Ù•É±…å}¥¹™¼¹ÑåÁ”€ô=	M}M=UI}QeA}%9AUPì(%½Ù•É±…å}¥¹™¼¹½ÕÑÁÕÑ}™±…Ì€ô($%=	M}M=UI}Y%<ğ=	M}M=UI}UMQ=5}I\ğ=	M}M=UI}=5A=M%Qğ=	M}M=UI}MIì(%½Ù•É±…å}¥¹™¼¹•Ñ}¹…µ”€ô½Ù•É±…å}¹…µ”ì(%½Ù•É±…å}¥¹™¼¹É•…Ñ”€ô½Ù•É±…å}É•…Ñ”ì(%½Ù•É±…å}¥¹™¼¹‘•ÍÑÉ½ä€ô½Ù•É±…å}‘•ÍÑÉ½äì(%½Ù•É±…å}¥¹™¼¹•Ñ}İ¥‘Ñ €ô½Ù•É±…å}İ¥‘Ñ ì(%½Ù•É±…å}¥¹™¼¹•Ñ}¡•¥¡Ğ€ô½Ù•É±…å}¡•¥¡Ğì(%½Ù•É±…å}¥¹™¼¹•Ñ}‘•™…Õ±ÑÌ€ô½Ù•É±…å}‘•™…Õ±ÑÌì(%½Ù•É±…å}¥¹™¼¹•Ñ}ÁÉ½Á•ÉÑ¥•Ì€ô½Ù•É±…å}ÁÉ½Á•ÉÑ¥•Ìì(%½Ù•É±…å}¥¹™¼¹ÕÁ‘…Ñ”€ô½Ù•É±…å}ÕÁ‘…Ñ”ì(%½Ù•É±…å}¥¹™¼¹Ù¥‘•½}Ñ¥¬€ô½Ù•É±…å}Ñ¥¬ì(%½Ù•É±…å}¥¹™¼¹Ù¥‘•½}É•¹‘•È€ô½Ù•É±…å}É•¹‘•Èì(%½Ù•É±…å}¥¹™¼¹•¹Õµ}…Ñ¥Ù•}Í½ÕÉ•Ì€ô½Ù•É±…å}•¹Õµ}…Ñ¥Ù•}Í½ÕÉ•Ìì(%½Ù•É±…å}¥¹™¼¹Í…Ù”€ô½Ù•É±…å}Í…Ù”ì(%½Ù•É±…å}¥¹™¼¹±½…€ô½Ù•É±…å}±½…ì(%½Ù•É±…å}¥¹™¼¹¥½¹}ÑåÁ”€ô=	M}%=9}QeA}QaPì(%½‰Í}É•¥ÍÑ•É}Í½ÕÉ” ™½Ù•É±…å}¥¹™¼¤ì(%½‰Í}™É½¹Ñ•¹‘}…‘‘}•Ù•¹Ñ}…±±‰…¬¡™É½¹Ñ•¹‘}•Ù•¹Ğ°¹Õ±±ÁÑÈ¤ì(%‰±½œ¡1=}%9<°€‰mÕÉ¥½ÕÌ	¥Á•‘…±t9…Ñ¥Ù”Í•ÍÍ¥½¸½Ù•É±…ä±½…‘•ˆ¤ì(%É•ÑÕÉ¸ÑÉÕ”ì)ô()Ù½¥½‰Í}µ½‘Õ±•}Õ¹±½…¡Ù½¥¤)ì(%½‰Í}™É½¹Ñ•¹‘}É•µ½Ù•}•Ù•¹Ñ}…±±‰…¬¡™É½¹Ñ•¹‘}•Ù•¹Ğ°¹Õ±±ÁÑÈ¤ì(%‰±½œ¡1=}%9<°€‰mÕÉ¥½ÕÌ	¥Á•‘…±t9…Ñ¥Ù”Í•ÍÍ¥½¸½Ù•É±…äÕ¹±½…‘•ˆ¤ì)ô()½¹ÍĞ¡…È€©½‰Í}µ½‘Õ±•}‘•ÍÉ¥ÁÑ¥½¸¡Ù½¥¤)ì(%É•ÑÕÉ¸€‰9…Ñ¥Ù”ÕÉ¥½ÕÌ	¥Á•‘…°Í•ÍÍ¥½¸½Ù•É±…äİ¥Ñ ¥¹‘•Á•¹‘•¹Ğ=	L…¹¥ÑÕ´Y•ÉÑ¥…°Ñ¥µ•È‰¥¹‘¥¹Ì¸ˆì)ô

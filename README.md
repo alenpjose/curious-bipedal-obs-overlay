@@ -5,7 +5,9 @@ Native Windows x64 source plugin for OBS Studio 32.1.2. It adds **Curious Bipeda
 ## Features
 
 - Bottom-left session banner using the approved Curious Bipedal glyph.
+- A content-sized session banner that expands for longer titles without distorting its rounded corners.
 - Safe-padded logo rendering that preserves the planet curve and floating dot.
+- An 80% default overlay scale, adjustable per source from 50% to 180%.
 - Top-right clock, date, and elapsed timer panel.
 - Independent settings, timer state, and source hotkeys for every source instance.
 - Main OBS stream start/stop binding for the landscape timer.
