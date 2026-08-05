@@ -34,16 +34,18 @@ jobs:
         shell: pwsh
         run: |
           $version = (Get-Content buildspec.json -Raw | ConvertFrom-Json).version
-          $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue
-          if (-not $iscc) {
-            $candidate = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
-            if (Test-Path $candidate) { $iscc = Get-Item $candidate }
+          $isccCommand = Get-Command iscc.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          $isccPath = if ($isccCommand) { $isccCommand.Path } else { $null }
+          if (-not $isccPath) {
+            $isccPath = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
           }
-          if (-not $iscc) {
+          if (-not (Test-Path -LiteralPath $isccPath -PathType Leaf)) {
             choco install innosetup --no-progress -y
-            $iscc = Get-Item (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe')
           }
-          & $iscc.FullName "/DMyAppVersion=$version" 'installer\curious-bipedal-obs-overlay.iss'
+          if (-not (Test-Path -LiteralPath $isccPath -PathType Leaf)) {
+            throw "Inno Setup compiler not found at $isccPath"
+          }
+          & $isccPath "/DMyAppVersion=$version" 'installer\curious-bipedal-obs-overlay.iss'
 
       - name: Verify Windows packages
         shell: pwsh
