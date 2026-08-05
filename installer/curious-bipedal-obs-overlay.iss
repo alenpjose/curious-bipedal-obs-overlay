@@ -17,6 +17,7 @@ DefaultDirName={commonappdata}\obs-studio\plugins\{#PluginName}
 DisableDirPage=yes
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
+PrivilegesRequiredOverridesAllowed=commandline
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\release\installer
@@ -61,3 +62,4 @@ begin
   if not Result then
     MsgBox('Close OBS Studio before uninstalling Curious Bipedal OBS Overlay, then run the uninstaller again.', mbError, MB_OK);
 end;
+
