@@ -1,0 +1,61 @@
+name: Windows x64 build
+
+on:
+  push:
+    branches: [main]
+    tags: ['*.*.*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build against OBS Studio 32.1.2
+        shell: pwsh
+        env:
+          CI: 'true'
+        run: ./.github/scripts/Build-Windows.ps1 -Target x64 -Configuration Release
+
+      - name: Create portable ZIP
+        shell: pwsh
+        env:
+          CI: 'true'
+        run: ./.github/scripts/Package-Windows.ps1 -Target x64 -Configuration Release
+
+      - name: Create Windows installer
+        shell: pwsh
+        run: |
+          $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue
+          if (-not $iscc) {
+            $candidate = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+            if (Test-Path $candidate) { $iscc = Get-Item $candidate }
+          }
+          if (-not $iscc) {
+            choco install innosetup --no-progress -y
+            $iscc = Get-Item (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe')
+          }
+          & $iscc.FullName '/DMyAppVersion=0.1.0-alpha.1' 'installer\curious-bipedal-obs-overlay.iss'
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: curious-bipedal-obs-overlay-windows-x64
+          if-no-files-found: error
+          path: |
+            release/*.zip
+            release/installer/*.exe
+
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${env:GITHUB_REF_NAME}" release/*.zip release/installer/*.exe --generate-notes

@@ -1,0 +1,45 @@
+{
+    "dependencies": {
+        "obs-studio": {
+            "version": "32.1.2",
+            "baseUrl": "https://github.com/obsproject/obs-studio/archive/refs/tags",
+            "label": "OBS sources",
+            "hashes": {
+                "macos": "39751f067bacc13d44b116c5138491b5f1391f91516d3d590d874edd21292291",
+                "windows-x64": "21cba22292985cf0da967d5c618999b40eaa32b73d2ab8b06154b5ea1b3d3798"
+            }
+        },
+        "prebuilt": {
+            "version": "2025-08-23",
+            "baseUrl": "https://github.com/obsproject/obs-deps/releases/download",
+            "label": "Pre-Built obs-deps",
+            "hashes": {
+                "macos": "495687e63383d1a287684b6e2e9bfe246bb8f156fe265926afb1a325af1edd2a",
+                "windows-x64": "8de229cff6f1981508c0eb646b35e644633a5855787b9f5d3b90ae2aeb87ffc1"
+            }
+        },
+        "qt6": {
+            "version": "2025-08-23",
+            "baseUrl": "https://github.com/obsproject/obs-deps/releases/download",
+            "label": "Pre-Built Qt6",
+            "hashes": {
+                "macos": "d3f5f04b6ea486e032530bdf0187cbda9a54e0a49621a4c8ba984c5023998867",
+                "windows-x64": "c62e82483bc7c0bf199e8ac3220c66a85a6e8a0cd69a05b6d44f873b830e415f"
+            },
+            "debugSymbols": {
+                "windows-x64": "aae88a17e0211cb37db6a8602f2e20d69255be1f9700c699008ca5adbce1dde2"
+            }
+        }
+    },
+    "platformConfig": {
+        "macos": {
+            "bundleId": "com.example.plugintemplate-for-obs"
+        }
+    },
+    "name": "curious-bipedal-obs-overlay",
+    "displayName": "Curious Bipedal OBS Overlay",
+    "version": "0.1.0-alpha.1",
+    "author": "Curious Bipedal",
+    "website": "https://github.com/alenpjose/curious-bipedal-obs-overlay",
+    "email": ""
+}
