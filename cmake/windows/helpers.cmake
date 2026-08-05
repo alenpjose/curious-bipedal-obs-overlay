@@ -26,9 +26,17 @@ function(set_target_properties_plugin target)
 
   install(
     FILES "$<TARGET_PDB_FILE:${target}>"
-    CONFIGURATIONS RelWithDebInfo Debug Release
+    CONFIGURATIONS RelWithDebInfo Debug
     DESTINATION "${target}/bin/64bit"
     OPTIONAL
+  )
+
+  install(
+    FILES
+      "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
+      "${CMAKE_CURRENT_SOURCE_DIR}/ASSET-NOTICE.md"
+      "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
+    DESTINATION "${target}"
   )
 
   if(TARGET plugin-support)

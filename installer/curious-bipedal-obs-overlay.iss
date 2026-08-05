@@ -25,6 +25,7 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayName={#MyAppName}
+LicenseFile=..\LICENSE
 VersionInfoVersion=0.1.0.0
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription=Native OBS Studio session overlay
@@ -34,6 +35,9 @@ RestartApplications=no
 [Files]
 Source: "..\release\Release\{#PluginName}\bin\64bit\*"; DestDir: "{app}\bin\64bit"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\release\Release\{#PluginName}\data\*"; DestDir: "{app}\data"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\release\Release\{#PluginName}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\release\Release\{#PluginName}\ASSET-NOTICE.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\release\Release\{#PluginName}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Code]
 function IsOBSRunning: Boolean;
@@ -49,4 +53,11 @@ begin
     Result := 'OBS Studio is still open. Close OBS Studio, then click Retry.'
   else
     Result := '';
+end;
+
+function InitializeUninstall(): Boolean;
+begin
+  Result := not IsOBSRunning;
+  if not Result then
+    MsgBox('Close OBS Studio before uninstalling Curious Bipedal OBS Overlay, then run the uninstaller again.', mbError, MB_OK);
 end;

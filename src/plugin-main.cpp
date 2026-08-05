@@ -3,9 +3,11 @@
 #include <util/platform.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -22,6 +24,13 @@ constexpr uint64_t NS_PER_SECOND = 1000000000ULL;
 enum class Layout : int { Landscape = 0, Vertical = 1 };
 enum class TimerBinding : int { MainObs = 0, AitumVertical = 1, Manual = 2 };
 
+struct Overlay;
+
+struct OverlayLifetime {
+	std::mutex mutex;
+	Overlay *overlay = nullptr;
+};
+
 struct Overlay {
 	obs_source_t *source = nullptr;
 	obs_source_t *session_panel = nullptr;
@@ -37,6 +46,11 @@ struct Overlay {
 	obs_source_t *timer_text = nullptr;
 
 	std::mutex mutex;
+	std::mutex connection_mutex;
+	std::mutex output_mutex;
+	std::atomic_bool destroying{false};
+	std::atomic_bool aitum_task_queued{false};
+	std::shared_ptr<OverlayLifetime> lifetime = std::make_shared<OverlayLifetime>();
 	uint32_t width = 2560;
 	uint32_t height = 1440;
 	Layout layout = Layout::Landscape;
@@ -121,6 +135,14 @@ void timer_reset(Overlay *overlay)
 	overlay->timer_started_ns = os_gettime_ns();
 }
 
+void timer_set_running(Overlay *overlay, bool running)
+{
+	if (running)
+		timer_start(overlay);
+	else
+		timer_pause(overlay);
+}
+
 void update_color_source(obs_source_t *source, uint32_t color, int width, int height)
 {
 	if (!source)
@@ -196,49 +218,130 @@ void render_source(obs_source_t *source, float x, float y, float scale_x = 1.0f,
 
 void vertical_output_started(void *data, calldata_t *)
 {
-	timer_start(static_cast<Overlay *>(data));
+	auto *overlay = static_cast<Overlay *>(data);
+	std::lock_guard<std::mutex> lock(overlay->mutex);
+	if (!overlay->destroying.load(std::memory_order_acquire) && overlay->binding == TimerBinding::AitumVertical &&
+	    !overlay->timer_running) {
+		overlay->timer_started_ns = os_gettime_ns();
+		overlay->timer_running = true;
+	}
 }
 
 void vertical_output_stopped(void *data, calldata_t *)
 {
-	timer_pause(static_cast<Overlay *>(data));
+	auto *overlay = static_cast<Overlay *>(data);
+	std::lock_guard<std::mutex> lock(overlay->mutex);
+	if (!overlay->destroying.load(std::memory_order_acquire) && overlay->binding == TimerBinding::AitumVertical &&
+	    overlay->timer_running) {
+		const uint64_t now = os_gettime_ns();
+		overlay->elapsed_before_start_ns = elapsed_ns_locked(overlay, now);
+		overlay->timer_running = false;
+	}
+}
+
+void disconnect_vertical_output_locked(Overlay *overlay)
+{
+	obs_output_t *output = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(overlay->output_mutex);
+		output = overlay->vertical_output;
+		overlay->vertical_output = nullptr;
+	}
+	if (!output)
+		return;
+	signal_handler_t *handler = obs_output_get_signal_handler(output);
+	signal_handler_disconnect(handler, "start", vertical_output_started, overlay);
+	signal_handler_disconnect(handler, "stop", vertical_output_stopped, overlay);
+	obs_output_release(output);
 }
 
 void disconnect_vertical_output(Overlay *overlay)
 {
-	if (!overlay->vertical_output)
-		return;
-	signal_handler_t *handler = obs_output_get_signal_handler(overlay->vertical_output);
-	signal_handler_disconnect(handler, "start", vertical_output_started, overlay);
-	signal_handler_disconnect(handler, "stop", vertical_output_stopped, overlay);
-	obs_output_release(overlay->vertical_output);
-	overlay->vertical_output = nullptr;
+	std::lock_guard<std::mutex> lock(overlay->connection_mutex);
+	disconnect_vertical_output_locked(overlay);
 }
 
 bool connect_vertical_output(Overlay *overlay)
 {
-	disconnect_vertical_output(overlay);
-	if (overlay->binding != TimerBinding::AitumVertical || overlay->aitum_output_name.empty())
+	std::lock_guard<std::mutex> connection_lock(overlay->connection_mutex);
+	disconnect_vertical_output_locked(overlay);
+	if (overlay->destroying.load(std::memory_order_acquire))
 		return false;
+
+	uint32_t width;
+	uint32_t height;
+	std::string output_name;
+	{
+		std::lock_guard<std::mutex> lock(overlay->mutex);
+		if (overlay->binding != TimerBinding::AitumVertical || overlay->aitum_output_name.empty())
+			return false;
+		width = overlay->width;
+		height = overlay->height;
+		output_name = overlay->aitum_output_name;
+	}
 
 	calldata_t call;
 	calldata_init(&call);
-	calldata_set_int(&call, "width", overlay->width);
-	calldata_set_int(&call, "height", overlay->height);
-	calldata_set_string(&call, "name", overlay->aitum_output_name.c_str());
+	calldata_set_int(&call, "width", width);
+	calldata_set_int(&call, "height", height);
+	calldata_set_string(&call, "name", output_name.c_str());
 	const bool called = proc_handler_call(obs_get_proc_handler(), "aitum_vertical_get_stream_output", &call);
-	if (called)
-		overlay->vertical_output = static_cast<obs_output_t *>(calldata_ptr(&call, "output"));
+	obs_output_t *output = called ? static_cast<obs_output_t *>(calldata_ptr(&call, "output")) : nullptr;
 	calldata_free(&call);
 
-	if (!overlay->vertical_output)
+	if (!output) {
+		timer_pause(overlay);
 		return false;
+	}
 
-	signal_handler_t *handler = obs_output_get_signal_handler(overlay->vertical_output);
+	const bool active = obs_output_active(output);
+	signal_handler_t *handler = obs_output_get_signal_handler(output);
 	signal_handler_connect(handler, "start", vertical_output_started, overlay);
 	signal_handler_connect(handler, "stop", vertical_output_stopped, overlay);
-	if (obs_output_active(overlay->vertical_output))
-		timer_start(overlay);
+	{
+		std::lock_guard<std::mutex> lock(overlay->output_mutex);
+		if (!overlay->destroying.load(std::memory_order_acquire)) {
+			overlay->vertical_output = output;
+			output = nullptr;
+		}
+	}
+	if (output) {
+		signal_handler_disconnect(handler, "start", vertical_output_started, overlay);
+		signal_handler_disconnect(handler, "stop", vertical_output_stopped, overlay);
+		obs_output_release(output);
+		return false;
+	}
+	timer_set_running(overlay, active);
+	return true;
+}
+
+struct AitumConnectTask {
+	std::shared_ptr<OverlayLifetime> lifetime;
+};
+
+void connect_vertical_output_on_ui(void *data)
+{
+	std::unique_ptr<AitumConnectTask> task(static_cast<AitumConnectTask *>(data));
+	std::lock_guard<std::mutex> lifetime_lock(task->lifetime->mutex);
+	Overlay *overlay = task->lifetime->overlay;
+	if (!overlay)
+		return;
+	connect_vertical_output(overlay);
+	overlay->aitum_task_queued.store(false, std::memory_order_release);
+}
+
+bool request_vertical_output_connection(Overlay *overlay)
+{
+	if (overlay->destroying.load(std::memory_order_acquire))
+		return false;
+	if (obs_in_task_thread(OBS_TASK_UI))
+		return connect_vertical_output(overlay);
+
+	bool expected = false;
+	if (!overlay->aitum_task_queued.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+		return true;
+	auto *task = new AitumConnectTask{overlay->lifetime};
+	obs_queue_task(OBS_TASK_UI, connect_vertical_output_on_ui, task, false);
 	return true;
 }
 
@@ -305,16 +408,28 @@ void update_clock_children(Overlay *overlay, uint64_t now)
 void overlay_update(void *data, obs_data_t *settings)
 {
 	auto *overlay = static_cast<Overlay *>(data);
-	const auto previous_binding = overlay->binding;
-	const std::string previous_output = overlay->aitum_output_name;
-	const uint32_t previous_width = overlay->width;
-	const uint32_t previous_height = overlay->height;
+	TimerBinding previous_binding;
+	std::string previous_output;
+	uint32_t previous_width;
+	uint32_t previous_height;
+	TimerBinding current_binding;
+	std::string current_output;
+	uint32_t current_width;
+	uint32_t current_height;
 
 	{
 		std::lock_guard<std::mutex> lock(overlay->mutex);
-		overlay->layout = static_cast<Layout>(obs_data_get_int(settings, "layout"));
-		overlay->width = static_cast<uint32_t>(std::max<int64_t>(320, obs_data_get_int(settings, "canvas_width")));
-		overlay->height = static_cast<uint32_t>(std::max<int64_t>(320, obs_data_get_int(settings, "canvas_height")));
+		previous_binding = overlay->binding;
+		previous_output = overlay->aitum_output_name;
+		previous_width = overlay->width;
+		previous_height = overlay->height;
+		overlay->layout = obs_data_get_int(settings, "layout") == static_cast<int>(Layout::Vertical)
+				  ? Layout::Vertical
+				  : Layout::Landscape;
+		overlay->width =
+			static_cast<uint32_t>(std::clamp<int64_t>(obs_data_get_int(settings, "canvas_width"), 320, 7680));
+		overlay->height =
+			static_cast<uint32_t>(std::clamp<int64_t>(obs_data_get_int(settings, "canvas_height"), 320, 7680));
 		overlay->session_title = obs_data_get_string(settings, "session_title");
 		overlay->log_number = obs_data_get_string(settings, "log_number");
 		overlay->use_system_clock = obs_data_get_bool(settings, "use_system_clock");
@@ -324,25 +439,35 @@ void overlay_update(void *data, obs_data_t *settings)
 		overlay->show_time = obs_data_get_bool(settings, "show_time");
 		overlay->show_timer = obs_data_get_bool(settings, "show_timer");
 		overlay->show_logo = obs_data_get_bool(settings, "show_logo");
-		overlay->opacity = static_cast<int>(obs_data_get_int(settings, "opacity"));
-		overlay->scale_percent = static_cast<int>(obs_data_get_int(settings, "scale_percent"));
-		overlay->edge_margin = static_cast<int>(obs_data_get_int(settings, "edge_margin"));
+		overlay->opacity = static_cast<int>(std::clamp<int64_t>(obs_data_get_int(settings, "opacity"), 10, 100));
+		overlay->scale_percent =
+			static_cast<int>(std::clamp<int64_t>(obs_data_get_int(settings, "scale_percent"), 50, 180));
+		overlay->edge_margin =
+			static_cast<int>(std::clamp<int64_t>(obs_data_get_int(settings, "edge_margin"), 0, 200));
 		overlay->accent_color = static_cast<uint32_t>(obs_data_get_int(settings, "accent_color"));
-		overlay->binding = static_cast<TimerBinding>(obs_data_get_int(settings, "timer_binding"));
+		const int64_t binding_value = obs_data_get_int(settings, "timer_binding");
+		overlay->binding = binding_value >= static_cast<int>(TimerBinding::MainObs) &&
+					   binding_value <= static_cast<int>(TimerBinding::Manual)
+				   ? static_cast<TimerBinding>(binding_value)
+				   : TimerBinding::MainObs;
 		overlay->aitum_output_name = obs_data_get_string(settings, "aitum_output_name");
+		current_binding = overlay->binding;
+		current_output = overlay->aitum_output_name;
+		current_width = overlay->width;
+		current_height = overlay->height;
 		refresh_static_children(overlay);
 		update_clock_children(overlay, os_gettime_ns());
 	}
 
-	if (previous_binding != overlay->binding || previous_output != overlay->aitum_output_name ||
-	    previous_width != overlay->width || previous_height != overlay->height) {
-		if (overlay->binding == TimerBinding::AitumVertical)
-			connect_vertical_output(overlay);
+	if (previous_binding != current_binding || previous_output != current_output || previous_width != current_width ||
+	    previous_height != current_height) {
+		if (current_binding == TimerBinding::AitumVertical)
+			request_vertical_output_connection(overlay);
 		else
 			disconnect_vertical_output(overlay);
 	}
-	if (overlay->binding == TimerBinding::MainObs && obs_frontend_streaming_active())
-		timer_start(overlay);
+	if (current_binding == TimerBinding::MainObs)
+		timer_set_running(overlay, obs_frontend_streaming_active());
 }
 
 void overlay_defaults(obs_data_t *settings)
@@ -379,8 +504,11 @@ bool layout_modified(obs_properties_t *properties, obs_property_t *, obs_data_t 
 		obs_data_set_int(settings, "canvas_height", 1440);
 		obs_data_set_int(settings, "timer_binding", static_cast<int>(TimerBinding::MainObs));
 	}
+	const bool show_aitum = layout == Layout::Vertical;
 	if (obs_property_t *property = obs_properties_get(properties, "aitum_output_name"))
-		obs_property_set_visible(property, layout == Layout::Vertical);
+		obs_property_set_visible(property, show_aitum);
+	if (obs_property_t *property = obs_properties_get(properties, "reconnect_aitum"))
+		obs_property_set_visible(property, show_aitum);
 	return true;
 }
 
@@ -388,6 +516,8 @@ bool timer_binding_modified(obs_properties_t *properties, obs_property_t *, obs_
 {
 	const auto binding = static_cast<TimerBinding>(obs_data_get_int(settings, "timer_binding"));
 	if (obs_property_t *property = obs_properties_get(properties, "aitum_output_name"))
+		obs_property_set_visible(property, binding == TimerBinding::AitumVertical);
+	if (obs_property_t *property = obs_properties_get(properties, "reconnect_aitum"))
 		obs_property_set_visible(property, binding == TimerBinding::AitumVertical);
 	return true;
 }
@@ -418,10 +548,10 @@ bool button_reset(obs_properties_t *, obs_property_t *, void *data)
 
 bool button_reconnect(obs_properties_t *, obs_property_t *, void *data)
 {
-	return data ? connect_vertical_output(static_cast<Overlay *>(data)) : false;
+	return data ? request_vertical_output_connection(static_cast<Overlay *>(data)) : false;
 }
 
-obs_properties_t *overlay_properties(void *)
+obs_properties_t *overlay_properties(void *data)
 {
 	obs_properties_t *properties = obs_properties_create();
 	obs_properties_add_text(properties, "setup_note", obs_module_text("SetupNote"), OBS_TEXT_INFO);
@@ -469,6 +599,15 @@ obs_properties_t *overlay_properties(void *)
 	obs_properties_add_button(clock, "start_pause", obs_module_text("StartPause"), button_start_pause);
 	obs_properties_add_button(clock, "reset", obs_module_text("ResetTimer"), button_reset);
 	obs_properties_add_group(properties, "clock_group", obs_module_text("ClockGroup"), OBS_GROUP_NORMAL, clock);
+	if (data) {
+		auto *overlay = static_cast<Overlay *>(data);
+		std::lock_guard<std::mutex> lock(overlay->mutex);
+		const bool show_aitum = overlay->binding == TimerBinding::AitumVertical;
+		obs_property_set_visible(obs_properties_get(properties, "aitum_output_name"), show_aitum);
+		obs_property_set_visible(obs_properties_get(properties, "reconnect_aitum"), show_aitum);
+		obs_property_set_enabled(obs_properties_get(properties, "manual_date"), !overlay->use_system_clock);
+		obs_property_set_enabled(obs_properties_get(properties, "manual_time"), !overlay->use_system_clock);
+	}
 	return properties;
 }
 
@@ -488,6 +627,7 @@ void *overlay_create(obs_data_t *settings, obs_source_t *source)
 {
 	auto *overlay = new Overlay;
 	overlay->source = source;
+	overlay->lifetime->overlay = overlay;
 	overlay->session_panel = make_private_source("color_source_v3", "Curious Bipedal session panel");
 	overlay->telemetry_panel = make_private_source("color_source_v3", "Curious Bipedal telemetry panel");
 	overlay->accent = make_private_source("color_source_v3", "Curious Bipedal accent");
@@ -550,6 +690,11 @@ void release_source(obs_source_t *&source)
 void overlay_destroy(void *data)
 {
 	auto *overlay = static_cast<Overlay *>(data);
+	overlay->destroying.store(true, std::memory_order_release);
+	{
+		std::lock_guard<std::mutex> lifetime_lock(overlay->lifetime->mutex);
+		overlay->lifetime->overlay = nullptr;
+	}
 	{
 		std::lock_guard<std::mutex> lock(g_instances_mutex);
 		g_instances.erase(std::remove(g_instances.begin(), g_instances.end(), overlay), g_instances.end());
@@ -581,8 +726,53 @@ void overlay_destroy(void *data)
 	delete overlay;
 }
 
-uint32_t overlay_width(void *data) { return static_cast<Overlay *>(data)->width; }
-uint32_t overlay_height(void *data) { return static_cast<Overlay *>(data)->height; }
+uint32_t overlay_width(void *data)
+{
+	auto *overlay = static_cast<Overlay *>(data);
+	std::lock_guard<std::mutex> lock(overlay->mutex);
+	return overlay->width;
+}
+
+uint32_t overlay_height(void *data)
+{
+	auto *overlay = static_cast<Overlay *>(data);
+	std::lock_guard<std::mutex> lock(overlay->mutex);
+	return overlay->height;
+}
+
+void overlay_enum_active_sources(void *data, obs_source_enum_proc_t enum_callback, void *param)
+{
+	auto *overlay = static_cast<Overlay *>(data);
+	obs_source_t *children[] = {overlay->session_panel, overlay->telemetry_panel, overlay->accent,
+				    overlay->logo,          overlay->label_text,      overlay->title_text,
+				    overlay->log_text,      overlay->time_text,       overlay->date_text,
+				    overlay->timer_text};
+	for (obs_source_t *child : children) {
+		if (child)
+			enum_callback(overlay->source, child, param);
+	}
+}
+
+void overlay_save(void *data, obs_data_t *settings)
+{
+	auto *overlay = static_cast<Overlay *>(data);
+	std::lock_guard<std::mutex> lock(overlay->mutex);
+	obs_data_set_int(settings, "timer_elapsed_ns", static_cast<long long>(elapsed_ns_locked(overlay, os_gettime_ns())));
+	obs_data_set_bool(settings, "timer_was_running", overlay->timer_running);
+}
+
+void overlay_load(void *data, obs_data_t *settings)
+{
+	auto *overlay = static_cast<Overlay *>(data);
+	std::lock_guard<std::mutex> lock(overlay->mutex);
+	if (!obs_data_has_user_value(settings, "timer_elapsed_ns"))
+		return;
+	overlay->elapsed_before_start_ns =
+		static_cast<uint64_t>(std::max<long long>(0, obs_data_get_int(settings, "timer_elapsed_ns")));
+	overlay->timer_started_ns = os_gettime_ns();
+	if (overlay->binding == TimerBinding::Manual)
+		overlay->timer_running = obs_data_get_bool(settings, "timer_was_running");
+}
 
 void overlay_tick(void *data, float)
 {
@@ -595,45 +785,74 @@ void overlay_tick(void *data, float)
 			overlay->last_clock_update_ns = now;
 		}
 	}
-	if (overlay->binding == TimerBinding::AitumVertical && !overlay->vertical_output &&
-	    now - overlay->last_aitum_retry_ns >= 3 * NS_PER_SECOND) {
-		overlay->last_aitum_retry_ns = now;
-		connect_vertical_output(overlay);
+	bool retry_aitum = false;
+	{
+		std::lock_guard<std::mutex> state_lock(overlay->mutex);
+		std::lock_guard<std::mutex> output_lock(overlay->output_mutex);
+		retry_aitum = overlay->binding == TimerBinding::AitumVertical && !overlay->vertical_output &&
+			      now - overlay->last_aitum_retry_ns >= 3 * NS_PER_SECOND;
+		if (retry_aitum)
+			overlay->last_aitum_retry_ns = now;
 	}
+	if (retry_aitum)
+		request_vertical_output_connection(overlay);
 }
 
 void overlay_render(void *data, gs_effect_t *)
 {
 	auto *overlay = static_cast<Overlay *>(data);
-	std::lock_guard<std::mutex> lock(overlay->mutex);
-	const float unit = (overlay->layout == Layout::Vertical)
-				   ? std::min(static_cast<float>(overlay->width) / 1440.0f,
-					      static_cast<float>(overlay->height) / 2560.0f)
-				   : std::min(static_cast<float>(overlay->width) / 2560.0f,
-					      static_cast<float>(overlay->height) / 1440.0f);
-	const float scale = unit * static_cast<float>(overlay->scale_percent) / 100.0f;
-	const float margin = static_cast<float>(overlay->edge_margin) * unit;
+	uint32_t width;
+	uint32_t height;
+	Layout layout;
+	int scale_percent;
+	int edge_margin;
+	bool show_logo;
+	bool show_date;
+	bool show_time;
+	bool show_timer;
+	{
+		std::lock_guard<std::mutex> lock(overlay->mutex);
+		width = overlay->width;
+		height = overlay->height;
+		layout = overlay->layout;
+		scale_percent = overlay->scale_percent;
+		edge_margin = overlay->edge_margin;
+		show_logo = overlay->show_logo;
+		show_date = overlay->show_date;
+		show_time = overlay->show_time;
+		show_timer = overlay->show_timer;
+	}
+	const float unit = (layout == Layout::Vertical)
+				   ? std::min(static_cast<float>(width) / 1440.0f, static_cast<float>(height) / 2560.0f)
+				   : std::min(static_cast<float>(width) / 2560.0f, static_cast<float>(height) / 1440.0f);
+	const float margin = static_cast<float>(edge_margin) * unit;
+	const float requested_scale = unit * static_cast<float>(scale_percent) / 100.0f;
+	const float available_width = std::max(static_cast<float>(width) - 2.0f * margin, 1.0f);
+	const float available_height = std::max(static_cast<float>(height) - 2.0f * margin, 1.0f);
+	const float fit_scale = std::min({available_width / 820.0f, available_width / 460.0f,
+					  available_height / 170.0f, available_height / 148.0f});
+	const float scale = std::min(requested_scale, fit_scale);
 	const float session_h = 170.0f * scale;
 	const float telemetry_w = 460.0f * scale;
 	const float session_x = margin;
-	const float session_y = static_cast<float>(overlay->height) - margin - session_h;
-	const float telemetry_x = static_cast<float>(overlay->width) - margin - telemetry_w;
+	const float session_y = static_cast<float>(height) - margin - session_h;
+	const float telemetry_x = static_cast<float>(width) - margin - telemetry_w;
 	const float telemetry_y = margin;
 
 	render_source(overlay->session_panel, session_x, session_y, scale, scale);
 	render_source(overlay->accent, session_x, session_y, scale, scale);
-	if (overlay->show_logo && overlay->logo) {
+	if (show_logo && overlay->logo) {
 		const float logo_native = static_cast<float>(std::max(obs_source_get_width(overlay->logo), 1U));
 		const float logo_size = 145.0f * scale;
 		render_source(overlay->logo, session_x + 18.0f * scale, session_y + 12.5f * scale,
 			      logo_size / logo_native, logo_size / logo_native);
 	}
-	const float text_x = session_x + (overlay->show_logo ? 176.0f : 30.0f) * scale;
+	const float text_x = session_x + (show_logo ? 176.0f : 30.0f) * scale;
 	render_source(overlay->label_text, text_x, session_y + 18.0f * scale, scale, scale);
 	render_source(overlay->title_text, text_x, session_y + 52.0f * scale, scale, scale);
 	render_source(overlay->log_text, text_x, session_y + 119.0f * scale, scale, scale);
 
-	if (overlay->show_date || overlay->show_time || overlay->show_timer) {
+	if (show_date || show_time || show_timer) {
 		render_source(overlay->telemetry_panel, telemetry_x, telemetry_y, scale, scale);
 		render_source(overlay->time_text, telemetry_x + 178.0f * scale, telemetry_y + 13.0f * scale, scale, scale);
 		render_source(overlay->date_text, telemetry_x + 178.0f * scale, telemetry_y + 69.0f * scale, scale, scale);
@@ -649,7 +868,12 @@ void frontend_event(enum obs_frontend_event event, void *)
 		return;
 	std::lock_guard<std::mutex> lock(g_instances_mutex);
 	for (Overlay *overlay : g_instances) {
-		if (overlay->binding != TimerBinding::MainObs)
+		TimerBinding binding;
+		{
+			std::lock_guard<std::mutex> instance_lock(overlay->mutex);
+			binding = overlay->binding;
+		}
+		if (binding != TimerBinding::MainObs)
 			continue;
 		if (event == OBS_FRONTEND_EVENT_STREAMING_STARTED)
 			timer_start(overlay);
@@ -678,6 +902,9 @@ bool obs_module_load(void)
 	overlay_info.update = overlay_update;
 	overlay_info.video_tick = overlay_tick;
 	overlay_info.video_render = overlay_render;
+	overlay_info.enum_active_sources = overlay_enum_active_sources;
+	overlay_info.save = overlay_save;
+	overlay_info.load = overlay_load;
 	overlay_info.icon_type = OBS_ICON_TYPE_TEXT;
 	obs_register_source(&overlay_info);
 	obs_frontend_add_event_callback(frontend_event, nullptr);
