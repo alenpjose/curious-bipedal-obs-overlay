@@ -26,6 +26,8 @@ Native Windows x64 source plugin for OBS Studio 32.1.2. It adds **Curious Bipeda
 
 The installer writes to `C:\ProgramData\obs-studio\plugins\curious-bipedal-obs-overlay`, the shared Windows plugin location used by standard OBS installations.
 
+The current alpha binaries are not code-signed, so Windows SmartScreen may show an unrecognized-publisher warning. Verify the download against `SHA256SUMS.txt` before allowing it to run.
+
 ### Portable OBS installation
 
 The installer does not auto-detect portable OBS folders. Extract the plugin ZIP, then copy:

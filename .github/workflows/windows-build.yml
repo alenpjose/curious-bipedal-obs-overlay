@@ -47,6 +47,70 @@ jobs:
           }
           & $isccPath "/DMyAppVersion=$version" 'installer\curious-bipedal-obs-overlay.iss'
 
+      - name: Smoke-test installer and uninstaller
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem release/installer/*.exe | Select-Object -First 1
+          if (-not $installer) {
+            throw 'Installer executable was not created'
+          }
+
+          $testRoot = Join-Path $env:RUNNER_TEMP "curious-bipedal-installer-$([guid]::NewGuid().ToString('N'))"
+          $installDir = Join-Path $testRoot 'plugin'
+          $installLog = Join-Path $testRoot 'install.log'
+          $uninstallLog = Join-Path $testRoot 'uninstall.log'
+          New-Item -ItemType Directory -Path $testRoot | Out-Null
+
+          $installArgs = @(
+            '/CURRENTUSER'
+            '/VERYSILENT'
+            '/SUPPRESSMSGBOXES'
+            '/NORESTART'
+            "/DIR=$installDir"
+            "/LOG=$installLog"
+          )
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList $installArgs -Wait -PassThru
+          if ($install.ExitCode -ne 0) {
+            Get-Content -LiteralPath $installLog -ErrorAction SilentlyContinue
+            throw "Installer exited with code $($install.ExitCode)"
+          }
+
+          $packageRoot = Resolve-Path 'release/Release/curious-bipedal-obs-overlay'
+          $packageFiles = Get-ChildItem -LiteralPath $packageRoot -Recurse -File
+          foreach ($packageFile in $packageFiles) {
+            $relativePath = [IO.Path]::GetRelativePath($packageRoot, $packageFile.FullName)
+            $installedFile = Join-Path $installDir $relativePath
+            if (-not (Test-Path -LiteralPath $installedFile -PathType Leaf)) {
+              throw "Installer omitted $relativePath"
+            }
+            if ((Get-FileHash -LiteralPath $installedFile -Algorithm SHA256).Hash -ne
+                (Get-FileHash -LiteralPath $packageFile.FullName -Algorithm SHA256).Hash) {
+              throw "Installed file differs from package: $relativePath"
+            }
+          }
+
+          $uninstaller = Join-Path $installDir 'unins000.exe'
+          if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
+            throw 'Installer did not create an uninstaller'
+          }
+          $uninstall = Start-Process -FilePath $uninstaller -ArgumentList @(
+            '/VERYSILENT'
+            '/SUPPRESSMSGBOXES'
+            '/NORESTART'
+            "/LOG=$uninstallLog"
+          ) -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0) {
+            Get-Content -LiteralPath $uninstallLog -ErrorAction SilentlyContinue
+            throw "Uninstaller exited with code $($uninstall.ExitCode)"
+          }
+
+          foreach ($packageFile in $packageFiles) {
+            $relativePath = [IO.Path]::GetRelativePath($packageRoot, $packageFile.FullName)
+            if (Test-Path -LiteralPath (Join-Path $installDir $relativePath)) {
+              throw "Uninstaller left runtime file behind: $relativePath"
+            }
+          }
+
       - name: Verify Windows packages
         shell: pwsh
         run: ./.github/scripts/Test-Package-Windows.ps1 -Configuration Release
