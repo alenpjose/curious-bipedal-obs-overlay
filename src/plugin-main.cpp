@@ -948,6 +948,14 @@ void overlay_render(void *data, gs_effect_t *)
 
 const char *overlay_name(void *) { return obs_module_text("SourceName"); }
 
+bool overlay_audio_render(void *, uint64_t *, obs_source_audio_mix *, uint32_t, size_t, size_t)
+{
+	// OBS requires composite sources to provide this callback even when every
+	// enumerated child is video-only. Returning false correctly reports that
+	// this overlay has no audio to mix.
+	return false;
+}
+
 void frontend_event(enum obs_frontend_event event, void *)
 {
 	if (event != OBS_FRONTEND_EVENT_STREAMING_STARTED && event != OBS_FRONTEND_EVENT_STREAMING_STOPPED)
@@ -988,6 +996,7 @@ bool obs_module_load(void)
 	overlay_info.update = overlay_update;
 	overlay_info.video_tick = overlay_tick;
 	overlay_info.video_render = overlay_render;
+	overlay_info.audio_render = overlay_audio_render;
 	overlay_info.enum_active_sources = overlay_enum_active_sources;
 	overlay_info.save = overlay_save;
 	overlay_info.load = overlay_load;
