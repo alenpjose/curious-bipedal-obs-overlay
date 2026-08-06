@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Build against OBS Studio 32.1.2
         shell: pwsh
@@ -48,6 +48,7 @@ jobs:
           & $isccPath "/DMyAppVersion=$version" 'installer\curious-bipedal-obs-overlay.iss'
 
       - name: Smoke-test installer and uninstaller
+        id: installer_smoke
         shell: pwsh
         run: |
           $installer = Get-ChildItem release/installer/*.exe | Select-Object -First 1
@@ -60,6 +61,7 @@ jobs:
           $installLog = Join-Path $testRoot 'install.log'
           $uninstallLog = Join-Path $testRoot 'uninstall.log'
           New-Item -ItemType Directory -Path $testRoot | Out-Null
+          "INSTALLER_TEST_ROOT=$testRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
           $installArgs = @(
             '/CURRENTUSER'
@@ -77,6 +79,7 @@ jobs:
 
           $packageRoot = Resolve-Path 'release/Release/curious-bipedal-obs-overlay'
           $packageFiles = Get-ChildItem -LiteralPath $packageRoot -Recurse -File
+          $hashRows = @()
           foreach ($packageFile in $packageFiles) {
             $relativePath = [IO.Path]::GetRelativePath($packageRoot, $packageFile.FullName)
             $installedFile = Join-Path $installDir $relativePath
@@ -87,7 +90,13 @@ jobs:
                 (Get-FileHash -LiteralPath $packageFile.FullName -Algorithm SHA256).Hash) {
               throw "Installed file differs from package: $relativePath"
             }
+            $hashRows += [ordered]@{
+              path = $relativePath
+              package_sha256 = (Get-FileHash -LiteralPath $packageFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              installed_sha256 = (Get-FileHash -LiteralPath $installedFile -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
           }
+          $hashRows | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $testRoot 'installed-file-hashes.json') -Encoding utf8
 
           $uninstaller = Join-Path $installDir 'unins000.exe'
           if (-not (Test-Path -LiteralPath $uninstaller -PathType Leaf)) {
@@ -110,6 +119,40 @@ jobs:
               throw "Uninstaller left runtime file behind: $relativePath"
             }
           }
+          [ordered]@{
+            installer_exit = $install.ExitCode
+            uninstaller_exit = $uninstall.ExitCode
+            files_verified = $packageFiles.Count
+            runtime_leftovers = 0
+            passed = $true
+          } | ConvertTo-Json | Set-Content (Join-Path $testRoot 'lifecycle-summary.json') -Encoding utf8
+
+      - name: Preserve installer lifecycle evidence
+        if: always()
+        shell: pwsh
+        env:
+          SMOKE_OUTCOME: ${{ steps.installer_smoke.outcome }}
+        run: |
+          $evidenceDir = 'release/evidence/installer-lifecycle'
+          New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
+          if ($env:INSTALLER_TEST_ROOT -and (Test-Path -LiteralPath $env:INSTALLER_TEST_ROOT)) {
+            Get-ChildItem -LiteralPath $env:INSTALLER_TEST_ROOT -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.Extension -in '.log', '.json' } |
+              Copy-Item -Destination $evidenceDir
+          }
+          [ordered]@{
+            workflow_outcome = $env:SMOKE_OUTCOME
+            commit = $env:GITHUB_SHA
+            runner = $env:RUNNER_OS
+          } | ConvertTo-Json | Set-Content (Join-Path $evidenceDir 'workflow-summary.json') -Encoding utf8
+
+      - name: Upload installer lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: curious-bipedal-installer-lifecycle-evidence
+          if-no-files-found: error
+          path: release/evidence/installer-lifecycle/
 
       - name: Verify Windows packages
         shell: pwsh
@@ -123,7 +166,7 @@ jobs:
             Set-Content release/SHA256SUMS.txt -Encoding ascii
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: curious-bipedal-obs-overlay-windows-x64
           if-no-files-found: error
