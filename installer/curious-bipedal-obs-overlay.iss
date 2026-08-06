@@ -62,4 +62,3 @@ begin
   if not Result then
     MsgBox('Close OBS Studio before uninstalling Curious Bipedal OBS Overlay, then run the uninstaller again.', mbError, MB_OK);
 end;
-
