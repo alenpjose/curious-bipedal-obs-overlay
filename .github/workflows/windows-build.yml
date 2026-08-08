@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Build against OBS Studio 32.1.2
         shell: pwsh
@@ -142,7 +144,8 @@ jobs:
           }
           [ordered]@{
             workflow_outcome = $env:SMOKE_OUTCOME
-            commit = $env:GITHUB_SHA
+            commit = (git rev-parse HEAD)
+            event_sha = $env:GITHUB_SHA
             runner = $env:RUNNER_OS
           } | ConvertTo-Json | Set-Content (Join-Path $evidenceDir 'workflow-summary.json') -Encoding utf8
 
