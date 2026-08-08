@@ -161,7 +161,7 @@ jobs:
       - name: Write SHA-256 checksums
         shell: pwsh
         run: |
-          Get-FileHash release/*.zip, release/installer/*.exe -Algorithm SHA256 |
+          Get-FileHash release/*.zip, release/installer/*.exe, release/Release/curious-bipedal-obs-overlay/bin/64bit/curious-bipedal-obs-overlay.dll -Algorithm SHA256 |
             ForEach-Object { '{0} *{1}' -f $_.Hash.ToLowerInvariant(), (Split-Path $_.Path -Leaf) } |
             Set-Content release/SHA256SUMS.txt -Encoding ascii
 
