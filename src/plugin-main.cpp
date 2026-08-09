@@ -254,6 +254,14 @@ void render_source(obs_source_t *source, float x, float y, float scale_x = 1.0f,
 	gs_matrix_pop();
 }
 
+void render_text_source(obs_source_t *source, float x, float y, float scale_x = 1.0f, float scale_y = 1.0f)
+{
+	gs_blend_state_push();
+	gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+	render_source(source, x, y, scale_x, scale_y);
+	gs_blend_state_pop();
+}
+
 void vertical_output_started(void *data, calldata_t *)
 {
 	auto *overlay = static_cast<Overlay *>(data);
@@ -939,15 +947,18 @@ void overlay_render(void *data, gs_effect_t *)
 			      logo_size / logo_native, logo_size / logo_native);
 	}
 	const float text_x = session_x + (show_logo ? 160.0f : 30.0f) * scale;
-	render_source(overlay->label_text, text_x, session_y + 10.0f * scale, scale, scale);
-	render_source(overlay->title_text, text_x, session_y + 38.0f * scale, scale, scale);
-	render_source(overlay->log_text, text_x, session_y + 94.0f * scale, scale, scale);
+	render_text_source(overlay->label_text, text_x, session_y + 10.0f * scale, scale, scale);
+	render_text_source(overlay->title_text, text_x, session_y + 38.0f * scale, scale, scale);
+	render_text_source(overlay->log_text, text_x, session_y + 94.0f * scale, scale, scale);
 
 	if (show_date || show_time || show_timer) {
 		render_source(overlay->telemetry_panel, telemetry_x, telemetry_y, scale, scale);
-		render_source(overlay->timer_text, telemetry_x + 28.0f * scale, telemetry_y + 8.0f * scale, scale, scale);
-		render_source(overlay->time_text, telemetry_x + 48.0f * scale, telemetry_y + 69.0f * scale, scale, scale);
-		render_source(overlay->date_text, telemetry_x + 222.0f * scale, telemetry_y + 69.0f * scale, scale, scale);
+		render_text_source(overlay->timer_text, telemetry_x + 28.0f * scale, telemetry_y + 8.0f * scale, scale,
+				   scale);
+		render_text_source(overlay->time_text, telemetry_x + 48.0f * scale, telemetry_y + 69.0f * scale, scale,
+				   scale);
+		render_text_source(overlay->date_text, telemetry_x + 222.0f * scale, telemetry_y + 69.0f * scale, scale,
+				   scale);
 	}
 }
 
