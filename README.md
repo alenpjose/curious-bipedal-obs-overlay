@@ -1,76 +1,107 @@
 # Curious Bipedal OBS Overlay
 
-Native Windows x64 source plugin for OBS Studio 32.1.2. It adds **Curious Bipedal Session Overlay** to the OBS Sources menu and is designed for a normal landscape canvas plus an independent Aitum Vertical canvas.
+Native Windows x64 source plugin for OBS Studio 32.1.2. It adds **Curious Bipedal Session Overlay** to the Sources menu and supports a normal landscape canvas plus an independent Aitum Vertical canvas.
 
-## What it does
+## Features
 
-- Bottom-left session banner with the exact approved Curious Bipedal glyph.
-- Safe-padded logo rendering that preserves the entire planet line and floating dot.
+- Bottom-left session banner using the approved Curious Bipedal glyph.
+- A content-sized session banner that expands for longer titles without distorting its rounded corners.
+- Safe-padded logo rendering that preserves the planet curve and floating dot.
+- An 80% default overlay scale, adjustable per source from 50% to 180%.
 - Top-right clock, date, and elapsed timer panel.
-- One shared opacity setting for panels, text, accents, and logo.
-- Independent settings for every OBS source instance.
-- Landscape timer binding to the confirmed main OBS stream start/stop events.
-- Vertical timer binding to the named Aitum Vertical output's own start/stop signals.
-- Manual start/pause/reset buttons and per-source OBS hotkeys.
-- Responsive presets for 2560×1440 landscape and 1440×2560 vertical canvases, with custom dimensions available.
+- Independent settings, timer state, and source hotkeys for every source instance.
+- Main OBS stream start/stop binding for the landscape timer.
+- Named Aitum Vertical stream-output start/stop binding for the vertical timer.
+- Manual start, pause, and reset controls.
+- Presets for 2560×1440 landscape and 1080×1920 vertical canvases, plus persistent custom dimensions such as 1440×2560.
 
-## End-user installation
+## Installation
 
-1. Close OBS Studio.
-2. Run `Curious-Bipedal-OBS-Overlay-Setup-<version>-windows-x64.exe`.
-3. Restart OBS Studio.
-4. In the normal landscape scene, choose **Sources → + → Curious Bipedal Session Overlay**, select **Create New**, and keep the Landscape preset with **Main OBS stream** timer binding.
-5. In the Aitum Vertical scene, add another **new** Curious Bipedal source, select the Vertical preset, and enter the exact Aitum Vertical output name shown in Aitum's stream settings (normally `YouTube`).
+### Standard OBS installation
 
-Selecting an existing source intentionally shares the same instance. Use **Create New** for separate landscape and vertical settings.
+1. Close OBS Studio completely.
+2. Run `Curious-Bipedal-OBS-Overlay-Setup-<version>-windows-x64.exe` as an administrator.
+3. Start OBS Studio again.
+4. Add **Curious Bipedal Session Overlay** from the Sources menu.
 
-## Compatibility
+The installer writes to `C:\ProgramData\obs-studio\plugins\curious-bipedal-obs-overlay`, the shared Windows plugin location used by standard OBS installations.
 
-- Windows 10/11 x64
+The current alpha binaries are not code-signed, so Windows SmartScreen may show an unrecognized-publisher warning. Verify the download against `SHA256SUMS.txt` before allowing it to run.
+
+### Portable OBS installation
+
+The installer does not auto-detect portable OBS folders. Extract the plugin ZIP, then copy:
+
+- `curious-bipedal-obs-overlay\bin\64bit\curious-bipedal-obs-overlay.dll` to `<portable OBS>\obs-plugins\64bit\`.
+- The contents of `curious-bipedal-obs-overlay\data\` to `<portable OBS>\data\obs-plugins\curious-bipedal-obs-overlay\`.
+
+## Source setup
+
+1. In the normal scene, create a **new** source, choose the Landscape preset, and select **Main OBS stream**.
+2. In the Aitum Vertical scene, create another **new** source, choose the Vertical preset, and select **Aitum Vertical output**.
+3. Enter the Aitum output name exactly as it appears in Aitum's stream settings. The default `YouTube` is only an example.
+
+Choosing an existing OBS source intentionally reuses that source and its settings. Choose **Create New** for independent landscape and vertical configuration.
+
+Changing the layout preset applies that preset's dimensions once. Later width and height edits are stored on that source and are not overwritten when properties are reopened or another setting changes. Use **Reapply selected preset dimensions** only when you intentionally want to restore 2560×1440 or 1080×1920.
+
+## Compatibility and behavior
+
+- Windows 10 or 11 x64
 - OBS Studio 32.1.2
-- Aitum Vertical (the vertical timer uses its public `aitum_vertical_get_stream_output` procedure)
-- Aitum Multistream is compatible with the landscape arrangement: Twitch remains the main OBS stream and the landscape YouTube destination shares that same session timer.
+- Aitum Vertical 1.6.x public procedure API
+- Aitum Multistream
 
-The plugin does not link to Aitum. If Aitum Vertical is absent or the output name does not match, the overlay still renders and only the automatic vertical timer binding remains disconnected. The plugin retries every three seconds and also provides a **Reconnect to Aitum output** button.
+The plugin does not link against Aitum. It calls Aitum Vertical's public `aitum_vertical_get_stream_output` procedure using the configured canvas width, canvas height, and output name, then observes that output's own start/stop signals. It also reconciles the selected output once per second so it follows output objects that Aitum replaces during startup or reconnect. If Aitum Vertical is absent or the name/dimensions do not match, the overlay continues to render and retries automatically; only automatic vertical timer control is unavailable.
+
+The landscape timer follows OBS's main streaming lifecycle. Aitum Multistream destinations that share the main OBS stream therefore share the landscape session timer; independently started Multistream outputs are not separate timer bindings.
+
+## Timer controls and persistence
+
+- Automatic bindings synchronize to the current main or Aitum output state when selected.
+- Manual mode supports the source property buttons and per-source OBS hotkeys.
+- Assign each source's Start/Pause and Reset bindings in **Settings → Hotkeys**; the plugin does not impose fixed global keys.
+- Elapsed time, running state in Manual mode, source settings, and source hotkey assignments are stored with the scene collection.
+- Reset sets elapsed time to zero without changing whether the timer is running.
 
 ## Building
 
-The project is based on the official OBS plugin template build layout. The pinned `buildspec.json` downloads OBS Studio 32.1.2 sources and compatible OBS dependency bundles.
-
-Local prerequisites:
+Prerequisites:
 
 - Windows x64
-- Visual Studio 2022 with Desktop C++ tools and Windows 11 SDK 10.0.22621
+- Visual Studio 2022 with Desktop C++ tools and Windows SDK 10.0.22621 or newer
 - CMake 3.28 or newer
 - PowerShell 7.2 or newer
 - Inno Setup 6 (installer only)
 
-Build commands from PowerShell 7:
+From PowerShell 7:
 
 ```powershell
 $env:CI = 'true'
 ./.github/scripts/Build-Windows.ps1 -Target x64 -Configuration Release
 ./.github/scripts/Package-Windows.ps1 -Target x64 -Configuration Release
-& "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe" installer\curious-bipedal-obs-overlay.iss
+$version = (Get-Content buildspec.json -Raw | ConvertFrom-Json).version
+& "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$version" installer\curious-bipedal-obs-overlay.iss
+./.github/scripts/Test-Package-Windows.ps1 -Configuration Release
 ```
 
-GitHub Actions performs the same Windows x64 build, creates a portable ZIP and installer, and uploads both as workflow artifacts. A semantic-version tag also creates a GitHub Release.
+GitHub Actions builds against the pinned OBS Studio 32.1.2 source and dependency bundle, verifies the x64 PE and portable ZIP structure, creates the Inno Setup installer, writes SHA-256 checksums, and uploads the DLL, ZIP, installer, and checksum file as one workflow artifact. A semantic-version tag publishes the distributable files as a GitHub Release.
 
-## Verification checklist
+## Release smoke-test checklist
 
-- Launch OBS 32.1.2 with Aitum Vertical and Aitum Multistream installed.
-- Add two **new** source instances; confirm edits do not leak between them.
-- Inspect the logo at 2560×1440 and 1440×2560; the planet curve and dot must remain visible.
-- Start/stop the main OBS stream; only the landscape-bound timer should follow it.
-- Start/stop the named Aitum Vertical output; only the vertical-bound timer should follow it.
-- Confirm timer buttons and hotkeys work in Manual mode.
-- Restart OBS and confirm all source settings persist.
-- Uninstall, restart OBS, and confirm the source no longer appears.
+- Launch OBS 32.1.2 with Aitum Vertical and Aitum Multistream installed and confirm the module-load log entry.
+- Create two new sources. Select Vertical on the second and confirm its initial dimensions are 1080×1920.
+- Change the vertical source to a custom size, reopen properties, edit an unrelated field, switch scenes, and restart OBS; confirm both sources retain independent dimensions, titles, LOG numbers, timer states, output bindings, and hotkeys.
+- Inspect 2560×1440, 1080×1920, and 1440×2560 canvases and confirm the planet curve, floating dot, rounded panels, transparent text backgrounds, long-title sizing, and approved spacing remain intact.
+- Start/stop the main OBS stream and confirm only the main-bound timer follows it.
+- Stream the selected Aitum Vertical output to localhost only. Capture the vertical timer at approximately 0, 2, 5, 15, and 30 seconds and confirm it increases at every observation while the landscape timer remains unchanged.
+- Stop the selected Aitum output and confirm the vertical timer pauses. Restart or reconnect that output and confirm monitoring resumes without resetting elapsed time; repeat after temporarily making the selected output unavailable.
+- Assign different Start/Pause and Reset shortcuts to each source in **Settings → Hotkeys**. Activate the actual assigned keys, confirm source isolation, restart OBS, confirm assignments persist, and repeat the physical-key controls.
+- Remove each source in turn and confirm there is no crash or stale hotkey/output callback.
+- Install and uninstall with OBS closed; restart after each operation and verify source availability changes as expected.
 
-## Project status
-
-This is an alpha source package. It has structural checks against the OBS 32.1.2 source tree, but the DLL and installer must be built and run in a real Windows OBS/Aitum installation before release.
+Do not publish a release as runtime-validated until this checklist passes on real OBS/Aitum binaries.
 
 ## License and assets
 
-Plugin code is GPL-2.0. The Curious Bipedal logo assets are supplied for this project by the brand owner; they are not relicensed for unrelated use.
+Plugin code is GPL-2.0. The Curious Bipedal logo assets are supplied for this project by the brand owner and are not relicensed for unrelated use.

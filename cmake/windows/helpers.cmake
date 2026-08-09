@@ -26,9 +26,17 @@ function(set_target_properties_plugin target)
 
   install(
     FILES "$<TARGET_PDB_FILE:${target}>"
-    CONFIGURATIONS RelWithDebInfo Debug Release
+    CONFIGURATIONS RelWithDebInfo Debug
     DESTINATION "${target}/bin/64bit"
     OPTIONAL
+  )
+
+  install(
+    FILES
+      "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
+      "${CMAKE_CURRENT_SOURCE_DIR}/ASSET-NOTICE.md"
+      "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
+    DESTINATION "${target}"
   )
 
   if(TARGET plugin-support)
@@ -75,7 +83,13 @@ function(target_install_resources target)
       source_group("Resources/${relative_path}" FILES "${data_file}")
     endforeach()
 
-    install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/" DESTINATION "${target}/data" USE_SOURCE_PERMISSIONS)
+    install(
+      DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/data/"
+      DESTINATION "${target}/data"
+      USE_SOURCE_PERMISSIONS
+      PATTERN "curious-bipedal-primary-glyph.png" EXCLUDE
+      PATTERN "curious-bipedal-primary-glyph.svg" EXCLUDE
+    )
 
     add_custom_command(
       TARGET ${target}
