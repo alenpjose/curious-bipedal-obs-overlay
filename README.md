@@ -90,11 +90,14 @@ GitHub Actions builds against the pinned OBS Studio 32.1.2 source and dependency
 ## Release smoke-test checklist
 
 - Launch OBS 32.1.2 with Aitum Vertical and Aitum Multistream installed and confirm the module-load log entry.
-- Create two new sources and confirm edits, timer state, and hotkeys do not leak between instances.
-- Inspect 2560×1440 and 1440×2560 canvases and confirm the planet curve and floating dot remain visible.
+- Create two new sources. Select Vertical on the second and confirm its initial dimensions are 1080×1920.
+- Change the vertical source to a custom size, reopen properties, edit an unrelated field, switch scenes, and restart OBS; confirm both sources retain independent dimensions, titles, LOG numbers, timer states, output bindings, and hotkeys.
+- Inspect 2560×1440, 1080×1920, and 1440×2560 canvases and confirm the planet curve, floating dot, rounded panels, transparent text backgrounds, long-title sizing, and approved spacing remain intact.
 - Start/stop the main OBS stream and confirm only the main-bound timer follows it.
-- Start/stop the selected Aitum Vertical output and confirm only the Aitum-bound timer follows it.
-- Exercise manual buttons and hotkeys, restart OBS, and verify settings and elapsed state persist.
+- Stream the selected Aitum Vertical output to localhost only. Capture the vertical timer at approximately 0, 2, 5, 15, and 30 seconds and confirm it increases at every observation while the landscape timer remains unchanged.
+- Stop the selected Aitum output and confirm the vertical timer pauses. Restart or reconnect that output and confirm monitoring resumes without resetting elapsed time; repeat after temporarily making the selected output unavailable.
+- Assign different Start/Pause and Reset shortcuts to each source in **Settings → Hotkeys**. Activate the actual assigned keys, confirm source isolation, restart OBS, confirm assignments persist, and repeat the physical-key controls.
+- Remove each source in turn and confirm there is no crash or stale hotkey/output callback.
 - Install and uninstall with OBS closed; restart after each operation and verify source availability changes as expected.
 
 Do not publish a release as runtime-validated until this checklist passes on real OBS/Aitum binaries.
