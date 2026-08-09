@@ -42,13 +42,21 @@ try {
         "$Plugin/bin/64bit/$Plugin.dll",
         "$Plugin/data/locale/en-US.ini",
         "$Plugin/data/assets/curious-bipedal-primary-glyph-safe.png",
+        "$Plugin/data/assets/session-panel-left.png",
+        "$Plugin/data/assets/session-panel-middle.png",
+        "$Plugin/data/assets/session-panel-right.png",
+        "$Plugin/data/assets/telemetry-panel-rounded.png",
         "$Plugin/LICENSE",
         "$Plugin/ASSET-NOTICE.md",
         "$Plugin/README.md"
     )
-    $Names = $Archive.Entries.FullName -replace '\\', '/'
+    $Names = @($Archive.Entries.FullName -replace '\\', '/' | Where-Object { -not $_.EndsWith('/') })
     foreach ($Entry in $RequiredEntries) {
         if ($Entry -notin $Names) { throw "Portable ZIP is missing $Entry" }
+    }
+    $UnexpectedEntries = @($Names | Where-Object { $_ -notin $RequiredEntries })
+    if ($UnexpectedEntries.Count -ne 0) {
+        throw "Portable ZIP contains non-runtime files: $($UnexpectedEntries -join ', ')"
     }
     if ($Names -match '\.pdb$') { throw 'Portable ZIP must not contain debug symbols.' }
 } finally {
