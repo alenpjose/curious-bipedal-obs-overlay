@@ -18,6 +18,7 @@
 !README.md
 !ASSET-NOTICE.md
 !CODEX-HANDOVER.md
+!DEVELOPMENT-LOG.md
 
 # Exclude lock files
 *.lock.json

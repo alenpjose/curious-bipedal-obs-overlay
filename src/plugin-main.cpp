@@ -81,6 +81,7 @@ struct Overlay {
 	uint64_t elapsed_before_start_ns = 0;
 	uint64_t last_clock_update_ns = 0;
 	uint64_t last_aitum_retry_ns = 0;
+	uint64_t vertical_stop_pending_ns = 0;
 
 	obs_output_t *vertical_output = nullptr;
 	obs_hotkey_id start_pause_hotkey = OBS_INVALID_HOTKEY_ID;
@@ -262,27 +263,58 @@ void render_text_source(obs_source_t *source, float x, float y, float scale_x = 
 	gs_blend_state_pop();
 }
 
-void vertical_output_started(void *data, calldata_t *)
+bool is_current_vertical_output(Overlay *overlay, calldata_t *call)
+{
+	obs_output_t *signaled_output = call ? static_cast<obs_output_t *>(calldata_ptr(call, "output")) : nullptr;
+	if (!signaled_output)
+		return true;
+	std::lock_guard<std::mutex> lock(overlay->output_mutex);
+	return overlay->vertical_output == signaled_output;
+}
+
+void timer_reconcile_vertical_state(Overlay *overlay, bool active)
+{
+	std::lock_guard<std::mutex> lock(overlay->mutex);
+	if (active) {
+		overlay->vertical_stop_pending_ns = 0;
+		if (!overlay->timer_running) {
+			overlay->timer_started_ns = os_gettime_ns();
+			overlay->timer_running = true;
+		}
+		return;
+	}
+
+	const uint64_t now = os_gettime_ns();
+	const uint64_t stopped_at = overlay->vertical_stop_pending_ns ? overlay->vertical_stop_pending_ns : now;
+	overlay->vertical_stop_pending_ns = 0;
+	if (overlay->timer_running) {
+		overlay->elapsed_before_start_ns = elapsed_ns_locked(overlay, stopped_at);
+		overlay->timer_running = false;
+	}
+}
+
+void vertical_output_started(void *data, calldata_t *call)
 {
 	auto *overlay = static_cast<Overlay *>(data);
+	if (!is_current_vertical_output(overlay, call))
+		return;
 	std::lock_guard<std::mutex> lock(overlay->mutex);
 	if (!overlay->destroying.load(std::memory_order_acquire) && overlay->binding == TimerBinding::AitumVertical &&
 	    !overlay->timer_running) {
 		overlay->timer_started_ns = os_gettime_ns();
 		overlay->timer_running = true;
 	}
+	overlay->vertical_stop_pending_ns = 0;
 }
 
-void vertical_output_stopped(void *data, calldata_t *)
+void vertical_output_stopped(void *data, calldata_t *call)
 {
 	auto *overlay = static_cast<Overlay *>(data);
+	if (!is_current_vertical_output(overlay, call))
+		return;
 	std::lock_guard<std::mutex> lock(overlay->mutex);
-	if (!overlay->destroying.load(std::memory_order_acquire) && overlay->binding == TimerBinding::AitumVertical &&
-	    overlay->timer_running) {
-		const uint64_t now = os_gettime_ns();
-		overlay->elapsed_before_start_ns = elapsed_ns_locked(overlay, now);
-		overlay->timer_running = false;
-	}
+	if (!overlay->destroying.load(std::memory_order_acquire) && overlay->binding == TimerBinding::AitumVertical)
+		overlay->vertical_stop_pending_ns = os_gettime_ns();
 }
 
 void disconnect_vertical_output_locked(Overlay *overlay)
@@ -305,12 +337,13 @@ void disconnect_vertical_output(Overlay *overlay)
 {
 	std::lock_guard<std::mutex> lock(overlay->connection_mutex);
 	disconnect_vertical_output_locked(overlay);
+	std::lock_guard<std::mutex> state_lock(overlay->mutex);
+	overlay->vertical_stop_pending_ns = 0;
 }
 
 bool connect_vertical_output(Overlay *overlay)
 {
 	std::lock_guard<std::mutex> connection_lock(overlay->connection_mutex);
-	disconnect_vertical_output_locked(overlay);
 	if (overlay->destroying.load(std::memory_order_acquire))
 		return false;
 
@@ -336,17 +369,41 @@ bool connect_vertical_output(Overlay *overlay)
 	calldata_free(&call);
 
 	if (!output) {
-		timer_pause(overlay);
+		// Aitum can briefly remove an output while replacing/reconnecting it. Do
+		// not interpret a failed lookup as a real stop; the output's stop signal
+		// or a later inactive-state observation is authoritative.
+		obs_output_t *current = nullptr;
+		{
+			std::lock_guard<std::mutex> lock(overlay->output_mutex);
+			current = overlay->vertical_output;
+		}
+		if (current && !obs_output_active(current)) {
+			disconnect_vertical_output_locked(overlay);
+			timer_reconcile_vertical_state(overlay, false);
+		}
 		return false;
 	}
 
 	const bool active = obs_output_active(output);
+	obs_output_t *old_output = nullptr;
+	bool already_connected = false;
+	{
+		std::lock_guard<std::mutex> lock(overlay->output_mutex);
+		already_connected = overlay->vertical_output == output;
+	}
+	if (already_connected) {
+		obs_output_release(output);
+		timer_reconcile_vertical_state(overlay, active);
+		return true;
+	}
+
 	signal_handler_t *handler = obs_output_get_signal_handler(output);
 	signal_handler_connect(handler, "start", vertical_output_started, overlay);
 	signal_handler_connect(handler, "stop", vertical_output_stopped, overlay);
 	{
 		std::lock_guard<std::mutex> lock(overlay->output_mutex);
 		if (!overlay->destroying.load(std::memory_order_acquire)) {
+			old_output = overlay->vertical_output;
 			overlay->vertical_output = output;
 			output = nullptr;
 		}
@@ -357,7 +414,13 @@ bool connect_vertical_output(Overlay *overlay)
 		obs_output_release(output);
 		return false;
 	}
-	timer_set_running(overlay, active);
+	if (old_output) {
+		signal_handler_t *old_handler = obs_output_get_signal_handler(old_output);
+		signal_handler_disconnect(old_handler, "start", vertical_output_started, overlay);
+		signal_handler_disconnect(old_handler, "stop", vertical_output_stopped, overlay);
+		obs_output_release(old_output);
+	}
+	timer_reconcile_vertical_state(overlay, active);
 	return true;
 }
 
@@ -469,6 +532,11 @@ void update_clock_children(Overlay *overlay, uint64_t now)
 void overlay_update(void *data, obs_data_t *settings)
 {
 	auto *overlay = static_cast<Overlay *>(data);
+	// Migrate existing sources without applying a preset. This marker lets the
+	// property callback distinguish initialization/refresh from a user changing
+	// the preset selection.
+	if (!obs_data_has_user_value(settings, "preset_applied_layout"))
+		obs_data_set_int(settings, "preset_applied_layout", obs_data_get_int(settings, "layout"));
 	TimerBinding previous_binding;
 	std::string previous_output;
 	uint32_t previous_width;
@@ -556,20 +624,48 @@ void overlay_defaults(obs_data_t *settings)
 bool layout_modified(obs_properties_t *properties, obs_property_t *, obs_data_t *settings)
 {
 	const auto layout = static_cast<Layout>(obs_data_get_int(settings, "layout"));
+	if (!obs_data_has_user_value(settings, "preset_applied_layout")) {
+		obs_data_set_int(settings, "preset_applied_layout", static_cast<int>(layout));
+	} else if (obs_data_get_int(settings, "preset_applied_layout") != static_cast<int>(layout)) {
+		if (layout == Layout::Vertical) {
+			obs_data_set_int(settings, "canvas_width", 1080);
+			obs_data_set_int(settings, "canvas_height", 1920);
+			obs_data_set_int(settings, "timer_binding", static_cast<int>(TimerBinding::AitumVertical));
+		} else {
+			obs_data_set_int(settings, "canvas_width", 2560);
+			obs_data_set_int(settings, "canvas_height", 1440);
+			obs_data_set_int(settings, "timer_binding", static_cast<int>(TimerBinding::MainObs));
+		}
+		obs_data_set_int(settings, "preset_applied_layout", static_cast<int>(layout));
+	}
+	const bool show_aitum =
+		obs_data_get_int(settings, "timer_binding") == static_cast<int>(TimerBinding::AitumVertical);
+	if (obs_property_t *property = obs_properties_get(properties, "aitum_output_name"))
+		obs_property_set_visible(property, show_aitum);
+	if (obs_property_t *property = obs_properties_get(properties, "reconnect_aitum"))
+		obs_property_set_visible(property, show_aitum);
+	return true;
+}
+
+bool button_apply_preset(obs_properties_t *, obs_property_t *, void *data)
+{
+	if (!data)
+		return false;
+	auto *overlay = static_cast<Overlay *>(data);
+	obs_data_t *settings = obs_source_get_settings(overlay->source);
+	const auto layout = static_cast<Layout>(obs_data_get_int(settings, "layout"));
 	if (layout == Layout::Vertical) {
-		obs_data_set_int(settings, "canvas_width", 1440);
-		obs_data_set_int(settings, "canvas_height", 2560);
+		obs_data_set_int(settings, "canvas_width", 1080);
+		obs_data_set_int(settings, "canvas_height", 1920);
 		obs_data_set_int(settings, "timer_binding", static_cast<int>(TimerBinding::AitumVertical));
 	} else {
 		obs_data_set_int(settings, "canvas_width", 2560);
 		obs_data_set_int(settings, "canvas_height", 1440);
 		obs_data_set_int(settings, "timer_binding", static_cast<int>(TimerBinding::MainObs));
 	}
-	const bool show_aitum = layout == Layout::Vertical;
-	if (obs_property_t *property = obs_properties_get(properties, "aitum_output_name"))
-		obs_property_set_visible(property, show_aitum);
-	if (obs_property_t *property = obs_properties_get(properties, "reconnect_aitum"))
-		obs_property_set_visible(property, show_aitum);
+	obs_data_set_int(settings, "preset_applied_layout", static_cast<int>(layout));
+	obs_source_update(overlay->source, settings);
+	obs_data_release(settings);
 	return true;
 }
 
@@ -628,6 +724,8 @@ obs_properties_t *overlay_properties(void *data)
 	obs_property_list_add_int(layout, obs_module_text("Landscape"), static_cast<int>(Layout::Landscape));
 	obs_property_list_add_int(layout, obs_module_text("Vertical"), static_cast<int>(Layout::Vertical));
 	obs_property_set_modified_callback(layout, layout_modified);
+	obs_properties_add_button(layout_group, "apply_layout_preset", obs_module_text("ApplyLayoutPreset"),
+				  button_apply_preset);
 	obs_properties_add_int(layout_group, "canvas_width", obs_module_text("CanvasWidth"), 320, 7680, 2);
 	obs_properties_add_int(layout_group, "canvas_height", obs_module_text("CanvasHeight"), 320, 7680, 2);
 	obs_properties_add_int_slider(layout_group, "scale_percent", obs_module_text("OverlayScale"), 50, 180, 1);
@@ -674,14 +772,22 @@ obs_properties_t *overlay_properties(void *data)
 
 void hotkey_start_pause(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed)
 {
-	if (pressed)
-		timer_toggle(static_cast<Overlay *>(data));
+	if (!pressed)
+		return;
+	auto *lifetime = static_cast<OverlayLifetime *>(data);
+	std::lock_guard<std::mutex> lock(lifetime->mutex);
+	if (lifetime->overlay)
+		timer_toggle(lifetime->overlay);
 }
 
 void hotkey_reset(void *data, obs_hotkey_id, obs_hotkey_t *, bool pressed)
 {
-	if (pressed)
-		timer_reset(static_cast<Overlay *>(data));
+	if (!pressed)
+		return;
+	auto *lifetime = static_cast<OverlayLifetime *>(data);
+	std::lock_guard<std::mutex> lock(lifetime->mutex);
+	if (lifetime->overlay)
+		timer_reset(lifetime->overlay);
 }
 
 void *overlay_create(obs_data_t *settings, obs_source_t *source)
@@ -737,9 +843,10 @@ void *overlay_create(obs_data_t *settings, obs_source_t *source)
 	add_active_child(overlay, overlay->timer_text);
 
 	overlay->start_pause_hotkey = obs_hotkey_register_source(source, "curious_bipedal.timer.start_pause",
-								  obs_module_text("HotkeyStartPause"), hotkey_start_pause, overlay);
+								  obs_module_text("HotkeyStartPause"), hotkey_start_pause,
+								  overlay->lifetime.get());
 	overlay->reset_hotkey = obs_hotkey_register_source(source, "curious_bipedal.timer.reset",
-							obs_module_text("HotkeyReset"), hotkey_reset, overlay);
+							obs_module_text("HotkeyReset"), hotkey_reset, overlay->lifetime.get());
 	{
 		std::lock_guard<std::mutex> lock(g_instances_mutex);
 		g_instances.push_back(overlay);
@@ -763,6 +870,14 @@ void overlay_destroy(void *data)
 	{
 		std::lock_guard<std::mutex> lifetime_lock(overlay->lifetime->mutex);
 		overlay->lifetime->overlay = nullptr;
+	}
+	if (overlay->start_pause_hotkey != OBS_INVALID_HOTKEY_ID) {
+		obs_hotkey_unregister(overlay->start_pause_hotkey);
+		overlay->start_pause_hotkey = OBS_INVALID_HOTKEY_ID;
+	}
+	if (overlay->reset_hotkey != OBS_INVALID_HOTKEY_ID) {
+		obs_hotkey_unregister(overlay->reset_hotkey);
+		overlay->reset_hotkey = OBS_INVALID_HOTKEY_ID;
 	}
 	{
 		std::lock_guard<std::mutex> lock(g_instances_mutex);
@@ -875,9 +990,8 @@ void overlay_tick(void *data, float)
 	bool retry_aitum = false;
 	{
 		std::lock_guard<std::mutex> state_lock(overlay->mutex);
-		std::lock_guard<std::mutex> output_lock(overlay->output_mutex);
-		retry_aitum = overlay->binding == TimerBinding::AitumVertical && !overlay->vertical_output &&
-			      now - overlay->last_aitum_retry_ns >= 3 * NS_PER_SECOND;
+		retry_aitum = overlay->binding == TimerBinding::AitumVertical &&
+			      now - overlay->last_aitum_retry_ns >= NS_PER_SECOND;
 		if (retry_aitum)
 			overlay->last_aitum_retry_ns = now;
 	}

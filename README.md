@@ -13,7 +13,7 @@ Native Windows x64 source plugin for OBS Studio 32.1.2. It adds **Curious Bipeda
 - Main OBS stream start/stop binding for the landscape timer.
 - Named Aitum Vertical stream-output start/stop binding for the vertical timer.
 - Manual start, pause, and reset controls.
-- Presets for 2560×1440 landscape and 1440×2560 vertical canvases, plus custom dimensions.
+- Presets for 2560×1440 landscape and 1080×1920 vertical canvases, plus persistent custom dimensions such as 1440×2560.
 
 ## Installation
 
@@ -43,6 +43,8 @@ The installer does not auto-detect portable OBS folders. Extract the plugin ZIP,
 
 Choosing an existing OBS source intentionally reuses that source and its settings. Choose **Create New** for independent landscape and vertical configuration.
 
+Changing the layout preset applies that preset's dimensions once. Later width and height edits are stored on that source and are not overwritten when properties are reopened or another setting changes. Use **Reapply selected preset dimensions** only when you intentionally want to restore 2560×1440 or 1080×1920.
+
 ## Compatibility and behavior
 
 - Windows 10 or 11 x64
@@ -50,7 +52,7 @@ Choosing an existing OBS source intentionally reuses that source and its setting
 - Aitum Vertical 1.6.x public procedure API
 - Aitum Multistream
 
-The plugin does not link against Aitum. It calls Aitum Vertical's public `aitum_vertical_get_stream_output` procedure using the configured canvas width, canvas height, and output name, then observes that output's own start/stop signals. If Aitum Vertical is absent or the name/dimensions do not match, the overlay continues to render and retries the connection every three seconds; only automatic vertical timer control is unavailable.
+The plugin does not link against Aitum. It calls Aitum Vertical's public `aitum_vertical_get_stream_output` procedure using the configured canvas width, canvas height, and output name, then observes that output's own start/stop signals. It also reconciles the selected output once per second so it follows output objects that Aitum replaces during startup or reconnect. If Aitum Vertical is absent or the name/dimensions do not match, the overlay continues to render and retries automatically; only automatic vertical timer control is unavailable.
 
 The landscape timer follows OBS's main streaming lifecycle. Aitum Multistream destinations that share the main OBS stream therefore share the landscape session timer; independently started Multistream outputs are not separate timer bindings.
 
@@ -58,6 +60,7 @@ The landscape timer follows OBS's main streaming lifecycle. Aitum Multistream de
 
 - Automatic bindings synchronize to the current main or Aitum output state when selected.
 - Manual mode supports the source property buttons and per-source OBS hotkeys.
+- Assign each source's Start/Pause and Reset bindings in **Settings → Hotkeys**; the plugin does not impose fixed global keys.
 - Elapsed time, running state in Manual mode, source settings, and source hotkey assignments are stored with the scene collection.
 - Reset sets elapsed time to zero without changing whether the timer is running.
 
