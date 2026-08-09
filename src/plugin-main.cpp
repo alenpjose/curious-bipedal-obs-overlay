@@ -390,10 +390,15 @@ void refresh_static_children(Overlay *overlay)
 			    8, 92);
 
 	const std::string log_line = "LOG " + overlay->log_number;
+	// Keep GDI+ title textures bounded. Unbounded long titles can leave the
+	// graphics state clipped and suppress children rendered after the title.
+	// The extent still grows with the entered text so the panel remains dynamic.
+	const int title_extent_width =
+		std::clamp(static_cast<int>(overlay->session_title.size()) * 13 + 24, 80, 1000);
 	update_text_source(overlay->label_text, "CURIOUS BIPEDAL  /  FIELD SESSION", 17, true, overlay->opacity,
 			   rgba(239, 155, 61, 255), 0, 0, "left", false);
 	update_text_source(overlay->title_text, overlay->session_title, 38, true, overlay->opacity,
-			   rgba(244, 241, 233, 255), 0, 0, "left", false);
+			   rgba(244, 241, 233, 255), title_extent_width, 52);
 	update_text_source(overlay->log_text, log_line, 24, true, overlay->opacity,
 			   rgba(174, 183, 191, 255), 0, 0, "left", false);
 
@@ -545,52 +550,7 @@ bool layout_modified(obs_properties_t *properties, obs_property_t *, obs_data_t 
 	const auto layout = static_cast<Layout>(obs_data_get_int(settings, "layout"));
 	if (layout == Layout::Vertical) {
 		obs_data_set_int(settings, "canvas_width", 1440);
-		obs_data_set_int(settings, "canvas_height", 2560);
-		obs_data_set_int(settings, "timer_binding", static_cast<int>(TimerBinding::AitumVertical));
-	} else {
-		obs_data_set_int(settings, "canvas_width", 2560);
-		obs_data_set_int(settings, "canvas_height", 1440);
-		obs_data_set_int(settings, "timer_binding", static_cast<int>(TimerBinding::MainObs));
-	}
-	const bool show_aitum = layout == Layout::Vertical;
-	if (obs_property_t *property = obs_properties_get(properties, "aitum_output_name"))
-		obs_property_set_visible(property, show_aitum);
-	if (obs_property_t *property = obs_properties_get(properties, "reconnect_aitum"))
-		obs_property_set_visible(property, show_aitum);
-	return true;
-}
-
-bool timer_binding_modified(obs_properties_t *properties, obs_property_t *, obs_data_t *settings)
-{
-	const auto binding = static_cast<TimerBinding>(obs_data_get_int(settings, "timer_binding"));
-	if (obs_property_t *property = obs_properties_get(properties, "aitum_output_name"))
-		obs_property_set_visible(property, binding == TimerBinding::AitumVertical);
-	if (obs_property_t *property = obs_properties_get(properties, "reconnect_aitum"))
-		obs_property_set_visible(property, binding == TimerBinding::AitumVertical);
-	return true;
-}
-
-bool system_clock_modified(obs_properties_t *properties, obs_property_t *, obs_data_t *settings)
-{
-	const bool automatic = obs_data_get_bool(settings, "use_system_clock");
-	if (obs_property_t *property = obs_properties_get(properties, "manual_date"))
-		obs_property_set_enabled(property, !automatic);
-	if (obs_property_t *property = obs_properties_get(properties, "manual_time"))
-		obs_property_set_enabled(property, !automatic);
-	return true;
-}
-
-bool button_start_pause(obs_properties_t *, obs_property_t *, void *data)
-{
-	if (data)
-		timer_toggle(static_cast<Overlay *>(data));
-	return true;
-}
-
-bool button_reset(obs_properties_t *, obs_property_t *, void *data)
-{
-	if (data)
-		timer_reset(static_cast<Overlay *>(data));
+		obs_data_…480 tokens truncated…verlay *>(data));
 	return true;
 }
 
@@ -1017,3 +977,4 @@ const char *obs_module_description(void)
 {
 	return "Native Curious Bipedal session overlay with independent OBS and Aitum Vertical timer bindings.";
 }
+
